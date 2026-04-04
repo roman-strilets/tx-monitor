@@ -13,19 +13,8 @@ from .protocol import (
     DEFAULT_RECONNECT_DELAY,
     DEFAULT_REQUEST_TIMEOUT,
     LOGIN_FLAG_SPREADING_TRANSACTIONS,
-    MSG_AUTHENTICATION,
-    MSG_BYE,
-    MSG_GET_TIME,
-    MSG_GET_TRANSACTION,
-    MSG_HAVE_TRANSACTION,
-    MSG_LOGIN,
-    MSG_NAMES,
-    MSG_NEW_TIP,
-    MSG_NEW_TRANSACTION,
-    MSG_PING,
-    MSG_PONG,
-    MSG_STATUS,
-    MSG_TIME,
+    MessageType,
+    message_name,
     Address,
 )
 from .storage import JsonLineWriter
@@ -126,7 +115,7 @@ def _monitor_connection(
     while True:
         next_tx_id = state.begin_request()
         if next_tx_id is not None:
-            connection.send(MSG_GET_TRANSACTION, encode_transaction_id(next_tx_id))
+            connection.send(MessageType.GET_TRANSACTION, encode_transaction_id(next_tx_id))
             request_deadline = time.monotonic() + config.request_timeout
             _log(config.verbose, f"[*] {endpoint} requested tx {next_tx_id.hex()}")
 
@@ -166,7 +155,7 @@ def _monitor_connection(
                 "connection closed before the mem-pool snapshot completed"
             )
 
-        if message_type == MSG_HAVE_TRANSACTION:
+        if message_type == MessageType.HAVE_TRANSACTION:
             try:
                 tx_id = decode_transaction_id(payload)
             except ValueError as exc:
@@ -181,7 +170,10 @@ def _monitor_connection(
                 _log(config.verbose, f"[*] {endpoint} duplicate tx {tx_id.hex()}")
             continue
 
-        if message_type == MSG_NEW_TRANSACTION:
+        if message_type == MessageType.NEW_TRANSACTION:
+            if state.in_flight is None:
+                _log(config.verbose, f"[*] {endpoint} received unsolicited NewTransaction, ignoring")
+                continue
             tx_id = state.complete_request()
             request_deadline = None
             _write_capture_record(config, writer, endpoint, tx_id, payload)
@@ -189,15 +181,15 @@ def _monitor_connection(
                 idle_started = time.monotonic()
             continue
 
-        if message_type == MSG_GET_TIME:
+        if message_type == MessageType.GET_TIME:
             connection.send_time()
             continue
 
-        if message_type == MSG_PING:
-            connection.send(MSG_PONG)
+        if message_type == MessageType.PING:
+            connection.send(MessageType.PONG)
             continue
 
-        if message_type == MSG_BYE:
+        if message_type == MessageType.BYE:
             if config.live:
                 state.requeue_inflight()
                 raise ConnectionError("node sent Bye")
@@ -206,17 +198,17 @@ def _monitor_connection(
             raise RuntimeError("node sent Bye before the mem-pool snapshot completed")
 
         if message_type in {
-            MSG_TIME,
-            MSG_AUTHENTICATION,
-            MSG_LOGIN,
-            MSG_NEW_TIP,
-            MSG_STATUS,
+            MessageType.TIME,
+            MessageType.AUTHENTICATION,
+            MessageType.LOGIN,
+            MessageType.NEW_TIP,
+            MessageType.STATUS,
         }:
-            name = MSG_NAMES.get(message_type, f"0x{message_type:02X}")
+            name = message_name(message_type)
             _log(config.verbose, f"[*] {endpoint} <- {name} ({len(payload)}B)")
             continue
 
-        name = MSG_NAMES.get(message_type, f"0x{message_type:02X}")
+        name = message_name(message_type)
         _log(config.verbose, f"[*] {endpoint} ignored {name} ({len(payload)}B)")
 
 

@@ -1,3 +1,5 @@
+from enum import IntEnum
+
 Address = tuple[str, int]
 
 PROTO_MAGIC = b"\x42\x6D\x0A"
@@ -15,36 +17,59 @@ EXTENSION_VERSION = 11
 LOGIN_FLAG_SPREADING_TRANSACTIONS = 0x01
 LOGIN_FLAG_SEND_PEERS = 0x04
 
-MSG_BYE = 0x01
-MSG_PING = 0x02
-MSG_PONG = 0x03
-MSG_SCHANNEL_INIT = 0x04
-MSG_SCHANNEL_READY = 0x05
-MSG_AUTHENTICATION = 0x06
-MSG_PEER_INFO = 0x08
-MSG_GET_TIME = 0x0B
-MSG_TIME = 0x0C
-MSG_LOGIN = 0x0F
-MSG_NEW_TIP = 0x10
-MSG_HAVE_TRANSACTION = 0x31
-MSG_GET_TRANSACTION = 0x32
-MSG_STATUS = 0x44
-MSG_NEW_TRANSACTION = 0x49
 
-MSG_NAMES = {
-    MSG_BYE: "Bye",
-    MSG_PING: "Ping",
-    MSG_PONG: "Pong",
-    MSG_SCHANNEL_INIT: "SChannelInitiate",
-    MSG_SCHANNEL_READY: "SChannelReady",
-    MSG_AUTHENTICATION: "Authentication",
-    MSG_PEER_INFO: "PeerInfo",
-    MSG_GET_TIME: "GetTime",
-    MSG_TIME: "Time",
-    MSG_LOGIN: "Login",
-    MSG_NEW_TIP: "NewTip",
-    MSG_HAVE_TRANSACTION: "HaveTransaction",
-    MSG_GET_TRANSACTION: "GetTransaction",
-    MSG_STATUS: "Status",
-    MSG_NEW_TRANSACTION: "NewTransaction",
+class MessageType(IntEnum):
+    """Beam protocol message type codes."""
+
+    BYE = 0x01
+    PING = 0x02
+    PONG = 0x03
+    SCHANNEL_INIT = 0x04
+    SCHANNEL_READY = 0x05
+    AUTHENTICATION = 0x06
+    PEER_INFO = 0x08
+    GET_TIME = 0x0B
+    TIME = 0x0C
+    LOGIN = 0x0F
+    NEW_TIP = 0x10
+    HAVE_TRANSACTION = 0x31
+    GET_TRANSACTION = 0x32
+    STATUS = 0x44
+    NEW_TRANSACTION = 0x49
+
+
+MESSAGE_NAMES = {
+    MessageType.BYE: "Bye",
+    MessageType.PING: "Ping",
+    MessageType.PONG: "Pong",
+    MessageType.SCHANNEL_INIT: "SChannelInitiate",
+    MessageType.SCHANNEL_READY: "SChannelReady",
+    MessageType.AUTHENTICATION: "Authentication",
+    MessageType.PEER_INFO: "PeerInfo",
+    MessageType.GET_TIME: "GetTime",
+    MessageType.TIME: "Time",
+    MessageType.LOGIN: "Login",
+    MessageType.NEW_TIP: "NewTip",
+    MessageType.HAVE_TRANSACTION: "HaveTransaction",
+    MessageType.GET_TRANSACTION: "GetTransaction",
+    MessageType.STATUS: "Status",
+    MessageType.NEW_TRANSACTION: "NewTransaction",
 }
+
+
+def message_name(message_type: int | MessageType) -> str:
+    """Get human-readable name for a message type.
+    
+    Returns the friendly name for known message types, or a hex representation
+    for unknown codes. This allows the code to handle future protocol extensions
+    gracefully.
+    
+    Args:
+        message_type: Message type code (int or MessageType enum member)
+    
+    Returns:
+        Human-readable message type name
+    """
+    if message_type in MESSAGE_NAMES:
+        return MESSAGE_NAMES[message_type]
+    return f"0x{message_type:02X}"

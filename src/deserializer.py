@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import IntEnum
 
 from .codec import decode_uint
 
@@ -7,17 +8,44 @@ ASSET_PROOF_N = 4
 ASSET_PROOF_M = 3
 INNER_PRODUCT_CYCLES = 6
 
-KERNEL_SUBTYPES = {
-    1: "Std",
-    2: "AssetEmit",
-    3: "ShieldedOutput",
-    4: "ShieldedInput",
-    5: "AssetCreate",
-    6: "AssetDestroy",
-    7: "ContractCreate",
-    8: "ContractInvoke",
-    9: "EvmInvoke",
+
+class KernelSubtype(IntEnum):
+    """Beam protocol kernel subtype codes."""
+
+    STD = 1
+    ASSET_EMIT = 2
+    SHIELDED_OUTPUT = 3
+    SHIELDED_INPUT = 4
+    ASSET_CREATE = 5
+    ASSET_DESTROY = 6
+    CONTRACT_CREATE = 7
+    CONTRACT_INVOKE = 8
+    EVM_INVOKE = 9
+
+
+_KERNEL_SUBTYPE_NAMES = {
+    KernelSubtype.STD: "Std",
+    KernelSubtype.ASSET_EMIT: "AssetEmit",
+    KernelSubtype.SHIELDED_OUTPUT: "ShieldedOutput",
+    KernelSubtype.SHIELDED_INPUT: "ShieldedInput",
+    KernelSubtype.ASSET_CREATE: "AssetCreate",
+    KernelSubtype.ASSET_DESTROY: "AssetDestroy",
+    KernelSubtype.CONTRACT_CREATE: "ContractCreate",
+    KernelSubtype.CONTRACT_INVOKE: "ContractInvoke",
+    KernelSubtype.EVM_INVOKE: "EvmInvoke",
 }
+
+
+def _get_kernel_subtype_name(subtype: KernelSubtype) -> str:
+    """Get human-readable name for a kernel subtype.
+    
+    Args:
+        subtype: Kernel subtype enum member
+    
+    Returns:
+        Human-readable kernel subtype name
+    """
+    return _KERNEL_SUBTYPE_NAMES.get(subtype, f"Unknown({subtype})")
 
 
 class DeserializationError(ValueError):
@@ -203,27 +231,31 @@ def deserialize_output(reader: BufferReader) -> dict[str, object]:
 
 def deserialize_kernel(reader: BufferReader, assume_std: bool) -> dict[str, object]:
     subtype_id = 1 if assume_std else reader.read_u8()
-    subtype_name = KERNEL_SUBTYPES.get(subtype_id)
-    if subtype_name is None:
+    
+    try:
+        subtype = KernelSubtype(subtype_id)
+    except ValueError:
         raise DeserializationError(f"unsupported kernel subtype: {subtype_id}")
+    
+    subtype_name = _get_kernel_subtype_name(subtype)
 
-    if subtype_id == 1:
+    if subtype == KernelSubtype.STD:
         return deserialize_std_kernel(reader, subtype_name)
-    if subtype_id == 2:
+    if subtype == KernelSubtype.ASSET_EMIT:
         return deserialize_asset_emit_kernel(reader, subtype_name)
-    if subtype_id == 3:
+    if subtype == KernelSubtype.SHIELDED_OUTPUT:
         return deserialize_shielded_output_kernel(reader, subtype_name)
-    if subtype_id == 4:
+    if subtype == KernelSubtype.SHIELDED_INPUT:
         return deserialize_shielded_input_kernel(reader, subtype_name)
-    if subtype_id == 5:
+    if subtype == KernelSubtype.ASSET_CREATE:
         return deserialize_asset_create_kernel(reader, subtype_name)
-    if subtype_id == 6:
+    if subtype == KernelSubtype.ASSET_DESTROY:
         return deserialize_asset_destroy_kernel(reader, subtype_name)
-    if subtype_id == 7:
+    if subtype == KernelSubtype.CONTRACT_CREATE:
         return deserialize_contract_create_kernel(reader, subtype_name)
-    if subtype_id == 8:
+    if subtype == KernelSubtype.CONTRACT_INVOKE:
         return deserialize_contract_invoke_kernel(reader, subtype_name)
-    if subtype_id == 9:
+    if subtype == KernelSubtype.EVM_INVOKE:
         return deserialize_evm_invoke_kernel(reader, subtype_name)
 
     raise DeserializationError(f"kernel subtype not implemented: {subtype_id}")

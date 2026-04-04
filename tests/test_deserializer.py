@@ -3,8 +3,13 @@ import unittest
 from pathlib import Path
 
 from src.deserializer import (
+    BufferReader,
+    DeserializationError,
+    KernelSubtype,
+    _get_kernel_subtype_name,
     decode_lsb_bits,
     decode_msb_bits,
+    deserialize_kernel,
     deserialize_new_transaction_payload,
 )
 
@@ -47,6 +52,34 @@ class DeserializerTests(unittest.TestCase):
         self.assertEqual(decoded["transaction"]["kernels"][0]["subtype"], "Std")
         self.assertIn("confidential_proof", decoded["transaction"]["outputs"][0])
         self.assertIn("asset_proof", decoded["transaction"]["outputs"][0])
+
+    def test_kernel_subtype_enum_unsupported_code(self):
+        """Verify that unsupported kernel subtype codes raise DeserializationError."""
+        # Create a buffer with an invalid subtype code (255)
+        reader = BufferReader(bytes([255]))
+        
+        with self.assertRaises(DeserializationError) as ctx:
+            deserialize_kernel(reader, assume_std=False)
+        
+        self.assertIn("unsupported kernel subtype: 255", str(ctx.exception))
+
+    def test_kernel_subtype_display_names(self):
+        """Verify display name helper returns correct strings for all known subtypes."""
+        expected_names = {
+            KernelSubtype.STD: "Std",
+            KernelSubtype.ASSET_EMIT: "AssetEmit",
+            KernelSubtype.SHIELDED_OUTPUT: "ShieldedOutput",
+            KernelSubtype.SHIELDED_INPUT: "ShieldedInput",
+            KernelSubtype.ASSET_CREATE: "AssetCreate",
+            KernelSubtype.ASSET_DESTROY: "AssetDestroy",
+            KernelSubtype.CONTRACT_CREATE: "ContractCreate",
+            KernelSubtype.CONTRACT_INVOKE: "ContractInvoke",
+            KernelSubtype.EVM_INVOKE: "EvmInvoke",
+        }
+        
+        for subtype, expected_name in expected_names.items():
+            with self.subTest(subtype=subtype):
+                self.assertEqual(_get_kernel_subtype_name(subtype), expected_name)
 
 
 if __name__ == "__main__":

@@ -11,16 +11,8 @@ from .protocol import (
     HEADER_SIZE,
     MAC_SIZE,
     MAX_FRAME_SIZE,
-    MSG_AUTHENTICATION,
-    MSG_BYE,
-    MSG_GET_TIME,
-    MSG_LOGIN,
-    MSG_NAMES,
-    MSG_PING,
-    MSG_PONG,
-    MSG_SCHANNEL_INIT,
-    MSG_SCHANNEL_READY,
-    MSG_TIME,
+    MessageType,
+    message_name,
 )
 from .secure_channel import SecureChannel
 from .utils import extension_bits, format_address
@@ -87,7 +79,7 @@ class BeamConnection:
         del self._buf[:size]
         return out
 
-    def send(self, message_type: int, payload: bytes = b""):
+    def send(self, message_type: MessageType, payload: bytes = b""):
         sock = self._require_socket()
         if self.sc.out_on:
             header = make_header(message_type, len(payload) + MAC_SIZE)
@@ -98,7 +90,7 @@ class BeamConnection:
         header = make_header(message_type, len(payload))
         sock.sendall(header + payload)
 
-    def recv(self) -> tuple[int, bytes]:
+    def recv(self) -> tuple[MessageType, bytes]:
         header = self.sc.decrypt(self._recv(HEADER_SIZE))
         message_type, size = parse_header(header)
         if size > MAX_FRAME_SIZE:
@@ -115,7 +107,7 @@ class BeamConnection:
 
         return message_type, body
 
-    def recv_message(self, timeout: float | None = None) -> tuple[int, bytes]:
+    def recv_message(self, timeout: float | None = None) -> tuple[MessageType, bytes]:
         if self._pending:
             return self._pending.popleft()
 
@@ -128,33 +120,33 @@ class BeamConnection:
             sock.settimeout(timeout)
         return self.recv()
 
-    def _queue_message(self, message_type: int, payload: bytes):
+    def _queue_message(self, message_type: MessageType, payload: bytes):
         self._pending.append((message_type, payload))
 
     def send_time(self):
-        self.send(MSG_TIME, encode_uint(int(time.time())))
+        self.send(MessageType.TIME, encode_uint(int(time.time())))
 
     def handshake(self, login_flags: int, fork_hashes: list[bytes]):
         nonce = self.sc.generate_nonce()
         node = format_address((self.host, self.port))
         self._log(f"[*] {node} SChannelInitiate ->")
-        self.send(MSG_SCHANNEL_INIT, nonce)
+        self.send(MessageType.SCHANNEL_INIT, nonce)
 
         message_type, payload = self.recv()
-        if message_type != MSG_SCHANNEL_INIT:
+        if message_type != MessageType.SCHANNEL_INIT:
             raise RuntimeError(f"expected SChannelInitiate, got 0x{message_type:02X}")
         self._log(f"[*] {node} <- SChannelInitiate")
 
-        self.send(MSG_SCHANNEL_READY)
+        self.send(MessageType.SCHANNEL_READY)
         self.sc.derive_keys(payload)
         self.sc.out_on = True
         self._log(f"[*] {node} outgoing encryption on")
 
-        self.send(MSG_GET_TIME)
-        self.send(MSG_LOGIN, build_login_payload(login_flags, fork_hashes))
+        self.send(MessageType.GET_TIME)
+        self.send(MessageType.LOGIN, build_login_payload(login_flags, fork_hashes))
 
         message_type, _ = self.recv()
-        if message_type != MSG_SCHANNEL_READY:
+        if message_type != MessageType.SCHANNEL_READY:
             raise RuntimeError(f"expected SChannelReady, got 0x{message_type:02X}")
 
         self.sc.in_on = True
@@ -163,31 +155,31 @@ class BeamConnection:
         saw_login = False
         while not saw_login:
             message_type, payload = self.recv()
-            if message_type == MSG_BYE:
+            if message_type == MessageType.BYE:
                 raise RuntimeError(
                     f"bye after login: {chr(payload[0]) if payload else '?'}"
                 )
-            if message_type == MSG_GET_TIME:
+            if message_type == MessageType.GET_TIME:
                 self.send_time()
                 continue
-            if message_type == MSG_TIME:
+            if message_type == MessageType.TIME:
                 server_time, _ = decode_uint(payload)
                 self._log(
                     f"[*] {node} time offset: {server_time - int(time.time()):+d}s"
                 )
                 continue
-            if message_type == MSG_AUTHENTICATION:
+            if message_type == MessageType.AUTHENTICATION:
                 self._log(f"[*] {node} <- Authentication")
                 continue
-            if message_type == MSG_PING:
-                self.send(MSG_PONG)
+            if message_type == MessageType.PING:
+                self.send(MessageType.PONG)
                 continue
-            if message_type == MSG_LOGIN:
+            if message_type == MessageType.LOGIN:
                 self._log(f"[*] {node} <- Login")
                 saw_login = True
                 continue
 
-            name = MSG_NAMES.get(message_type, f"0x{message_type:02X}")
+            name = message_name(message_type)
             self._log(f"[*] {node} queued {name} during login")
             self._queue_message(message_type, payload)
 
@@ -196,7 +188,7 @@ class BeamConnection:
             return
 
         try:
-            self.send(MSG_BYE, b"s")
+            self.send(MessageType.BYE, b"s")
         except Exception:
             pass
 

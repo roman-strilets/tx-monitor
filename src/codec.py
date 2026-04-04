@@ -1,6 +1,6 @@
 import struct
 
-from .protocol import PROTO_MAGIC
+from .protocol import PROTO_MAGIC, MessageType
 
 
 def encode_uint(value: int) -> bytes:
@@ -22,7 +22,7 @@ def decode_uint(buf: bytes | bytearray, offset: int = 0) -> tuple[int, int]:
     return int.from_bytes(buf[offset + 1 : offset + 1 + count], "little"), 1 + count
 
 
-def make_header(message_type: int, size: int) -> bytes:
+def make_header(message_type: MessageType, size: int) -> bytes:
     header = bytearray(8)
     header[0:3] = PROTO_MAGIC
     header[3] = message_type
@@ -30,11 +30,11 @@ def make_header(message_type: int, size: int) -> bytes:
     return bytes(header)
 
 
-def parse_header(header: bytes) -> tuple[int, int]:
+def parse_header(header: bytes) -> tuple[MessageType, int]:
     if header[0:3] != PROTO_MAGIC:
         raise ValueError(f"bad protocol magic: {header[0:3].hex()}")
 
-    return header[3], struct.unpack_from("<I", header, 4)[0]
+    return MessageType(header[3]), struct.unpack_from("<I", header, 4)[0]
 
 
 def encode_transaction_id(tx_id: bytes) -> bytes:

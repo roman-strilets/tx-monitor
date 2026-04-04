@@ -8,7 +8,7 @@ from src.codec import (
     make_header,
     parse_header,
 )
-from src.protocol import MSG_GET_TRANSACTION
+from src.protocol import MessageType
 
 
 class CodecTests(unittest.TestCase):
@@ -21,8 +21,8 @@ class CodecTests(unittest.TestCase):
                 self.assertEqual(size, len(encoded))
 
     def test_header_round_trip(self):
-        header = make_header(MSG_GET_TRANSACTION, 32)
-        self.assertEqual(parse_header(header), (MSG_GET_TRANSACTION, 32))
+        header = make_header(MessageType.GET_TRANSACTION, 32)
+        self.assertEqual(parse_header(header), (MessageType.GET_TRANSACTION, 32))
 
     def test_transaction_id_codec_requires_32_bytes(self):
         tx_id = bytes(range(32))
@@ -33,6 +33,19 @@ class CodecTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             decode_transaction_id(b"\x00")
+
+    def test_message_type_enum_interoperability(self):
+        """Verify MessageType enum members work with codec and remain int-compatible."""
+        # Verify enum member serializes and deserializes correctly
+        msg_type = MessageType.STATUS
+        header = make_header(msg_type, 42)
+        parsed_type, size = parse_header(header)
+        
+        # Both enum member and raw int should be equal
+        self.assertEqual(parsed_type, msg_type)
+        self.assertEqual(parsed_type, 0x44)
+        self.assertEqual(msg_type, 0x44)
+        self.assertEqual(size, 42)
 
 
 if __name__ == "__main__":
