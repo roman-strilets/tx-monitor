@@ -1,9 +1,10 @@
 import unittest
+from unittest.mock import MagicMock
 
 from src.codec import decode_uint
 from src.connection import build_login_payload
 from src.models import SnapshotState
-from src.monitor import _next_wait_timeout
+from src.monitor import MonitorConfig, TransactionMonitor
 from src.protocol import EXTENSION_VERSION, LOGIN_FLAG_SPREADING_TRANSACTIONS
 from src.utils import extension_bits
 
@@ -71,14 +72,12 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(list(state.pending), [tx_id])
 
     def test_live_wait_timeout_blocks_while_idle(self):
-        state = SnapshotState()
+        config = MonitorConfig(endpoint=("1.2.3.4", 8100), idle_timeout=3.0, live=True)
+        monitor = TransactionMonitor(config, MagicMock())
 
-        wait_timeout = _next_wait_timeout(
-            state=state,
+        wait_timeout = monitor._next_wait_timeout(
             request_deadline=None,
             idle_started=0.0,
-            idle_timeout=3.0,
-            live=True,
         )
 
         self.assertIsNone(wait_timeout)
