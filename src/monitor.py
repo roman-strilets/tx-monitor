@@ -177,10 +177,10 @@ class TransactionMonitor:
         tx_id: bytes,
         payload: bytes,
     ):
-        """Deserialise *payload* and persist the result as a CaptureRecord.
+        """Deserialize *payload* and persist the result as a CaptureRecord.
 
-        Attempts to fully deserialise the raw NewTransaction payload.  If
-        deserialisation fails the record is still written with the raw hex
+        Attempts to fully deserialize the raw NewTransaction payload.  If
+        deserialization fails the record is still written with the raw hex
         payload and the exception message stored in ``decode_error``, so no
         data is silently lost.
 

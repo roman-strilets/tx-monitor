@@ -1,3 +1,9 @@
+"""Beam wire-protocol constants and message type definitions.
+
+Defines the binary protocol magic, message-type codes, default connection
+parameters, and login flags used when communicating with a Beam node over
+its encrypted peer-to-peer protocol.
+"""
 from enum import IntEnum
 
 Address = tuple[str, int]

@@ -1,3 +1,9 @@
+"""Command-line entry point for the Beam mem-pool transaction monitor.
+
+Parses command-line arguments, validates them, and delegates to
+:func:`src.monitor.run_transaction_monitor`.  Run with ``--help`` for full
+usage information.
+"""
 import argparse
 import sys
 
@@ -14,6 +20,15 @@ from src.utils import parse_endpoint, parse_fork_hashes
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse command-line arguments and run the transaction monitor.
+
+    Args:
+        argv: Argument list to parse.  Defaults to ``sys.argv[1:]`` when
+            ``None``.
+
+    Returns:
+        Exit code: ``0`` on success, ``1`` on any error.
+    """
     parser = argparse.ArgumentParser(
         description="Capture or live-monitor Beam mem-pool transactions from a node"
     )

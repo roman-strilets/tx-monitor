@@ -1,9 +1,20 @@
+"""Data models used by the Beam transaction monitor.
+
+Contains frozen dataclasses for the output record (:class:`CaptureRecord`)
+and the monitoring summary (:class:`MonitorResult`), as well as the mutable
+:class:`SnapshotState` that tracks pending and in-flight transaction
+requests during a capture session.
+"""
 from collections import deque
 from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class CaptureRecord:
+    """Immutable record of a single captured mem-pool transaction.
+
+    Written as one JSON line per transaction to the configured output sink.
+    """
     node: str
     tx_id: str
     raw_payload_hex: str
@@ -13,6 +24,11 @@ class CaptureRecord:
     decode_error: str | None = None
 
     def as_dict(self) -> dict[str, object]:
+        """Return a JSON-serialisable dictionary representation of this record.
+
+        Optional fields (``decoded``, ``decode_error``) are omitted when
+        ``None`` to keep the output compact.
+        """
         record: dict[str, object] = {
             "node": self.node,
             "tx_id": self.tx_id,
@@ -29,6 +45,12 @@ class CaptureRecord:
 
 @dataclass(frozen=True)
 class MonitorResult:
+    """Summary returned by :meth:`~src.monitor.TransactionMonitor.run`.
+
+    Reports how many transactions were announced by the node, how many were
+    successfully captured, how many announcements were duplicates, the total
+    wall-clock duration, and (in live mode) how many reconnects occurred.
+    """
     node: str
     announced: int
     captured: int
@@ -41,12 +63,32 @@ class MonitorResult:
 
 @dataclass
 class SnapshotState:
+    """Mutable state for one mem-pool capture session.
+
+    Tracks which transaction IDs have been announced, which are waiting to be
+    fetched (``pending``), and which fetch is currently in-flight.  All
+    methods that mutate state return useful values so callers can react
+    immediately without additional attribute reads.
+    """
     pending: deque[bytes] = field(default_factory=deque)
     announced: set[bytes] = field(default_factory=set)
     captured: set[bytes] = field(default_factory=set)
     in_flight: bytes | None = None
 
     def observe_announcement(self, tx_id: bytes) -> bool:
+        """Record a newly announced transaction ID.
+
+        If *tx_id* has already been seen this call is a no-op and returns
+        ``False`` (duplicate).  Otherwise the ID is added to ``announced``
+        and, if not already captured, enqueued in ``pending``.
+
+        Args:
+            tx_id: 32-byte transaction identifier.
+
+        Returns:
+            ``True`` if this is the first time the ID was seen, ``False`` if
+            it is a duplicate.
+        """
         if tx_id in self.announced:
             return False
 
@@ -56,6 +98,13 @@ class SnapshotState:
         return True
 
     def begin_request(self) -> bytes | None:
+        """Dequeue the next pending transaction and mark it as in-flight.
+
+        Returns
+            ``None`` when a request is already in-flight or the queue is
+            empty; otherwise the 32-byte ID of the newly in-flight
+            transaction.
+        """
         if self.in_flight is not None or not self.pending:
             return None
 
@@ -63,6 +112,14 @@ class SnapshotState:
         return self.in_flight
 
     def complete_request(self) -> bytes:
+        """Mark the in-flight request as successfully captured.
+
+        Returns:
+            The 32-byte ID of the newly captured transaction.
+
+        Raises:
+            RuntimeError: If no request is currently in-flight.
+        """
         if self.in_flight is None:
             raise RuntimeError("no transaction request is in flight")
 
@@ -72,6 +129,12 @@ class SnapshotState:
         return tx_id
 
     def requeue_inflight(self):
+        """Return the in-flight transaction to the front of the pending queue.
+
+        Called when a connection error interrupts an in-flight request so
+        that the transaction can be retried on reconnect.  Does nothing when
+        no request is in-flight.
+        """
         if self.in_flight is None:
             return
 
@@ -79,7 +142,9 @@ class SnapshotState:
         self.in_flight = None
 
     def has_pending(self) -> bool:
+        """Return ``True`` when there are transactions waiting to be fetched."""
         return bool(self.pending)
 
     def is_idle(self) -> bool:
+        """Return ``True`` when no request is in-flight and the queue is empty."""
         return self.in_flight is None and not self.pending

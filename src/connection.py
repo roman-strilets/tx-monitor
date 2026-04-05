@@ -1,3 +1,10 @@
+"""TCP connection to a Beam node.
+
+Manages the raw socket, transparent AES-CTR encryption via
+:class:`~src.secure_channel.SecureChannel`, frame-level reads and writes,
+and the multi-step Login handshake required before any application-level
+messages can be exchanged.
+"""
 import hmac as hmac_mod
 import socket
 import sys
@@ -19,6 +26,18 @@ from .utils import extension_bits, format_address
 
 
 def build_login_payload(login_flags: int, fork_hashes: list[bytes]) -> bytes:
+    """Build the binary payload for a Beam Login message.
+
+    Encodes the requested extension version, fork hashes, and login flags
+    into the compact format expected by the node.
+
+    Args:
+        login_flags: Bitmask of ``LOGIN_FLAG_*`` constants.
+        fork_hashes: List of 32-byte fork-configuration hashes.
+
+    Returns:
+        Encoded Login payload bytes.
+    """
     flags = login_flags | (extension_bits(EXTENSION_VERSION) << 4)
     buf = bytearray(encode_uint(len(fork_hashes)))
     for fork_hash in fork_hashes:
@@ -28,6 +47,14 @@ def build_login_payload(login_flags: int, fork_hashes: list[bytes]) -> bytes:
 
 
 class BeamConnection:
+    """Manages a single TCP connection to a Beam node.
+
+    Handles socket lifecycle, transparent AES-CTR frame encryption/decryption
+    via :class:`~src.secure_channel.SecureChannel`, a read-ahead buffer, a
+    pending-message queue (used to park messages received during the Login
+    handshake), and the multi-step Login handshake itself.
+    """
+
     def __init__(
         self,
         host: str,
@@ -36,6 +63,15 @@ class BeamConnection:
         read_timeout: float,
         verbose: bool = False,
     ):
+        """Initialise connection parameters without opening a socket.
+
+        Args:
+            host: Hostname or IP address of the Beam node.
+            port: TCP port of the Beam node.
+            connect_timeout: Seconds to wait for the TCP handshake.
+            read_timeout: Default socket read timeout in seconds.
+            verbose: Emit diagnostic messages to *stderr* when ``True``.
+        """
         self.host = host
         self.port = port
         self.connect_timeout = connect_timeout
@@ -47,27 +83,46 @@ class BeamConnection:
         self._pending = deque()
 
     def _log(self, message: str):
+        """Print *message* to *stderr* when verbose logging is enabled."""
         if self.verbose:
             print(message, file=sys.stderr)
 
     def _require_socket(self) -> socket.socket:
+        """Return the open socket, raising ``RuntimeError`` if not connected."""
         if self.sock is None:
             raise RuntimeError("connection is not open")
         return self.sock
 
     def connect(self):
+        """Open the TCP socket and apply the default read timeout."""
         self.sock = socket.create_connection(
             (self.host, self.port), timeout=self.connect_timeout
         )
         self.sock.settimeout(self.read_timeout)
 
     def remote_address(self) -> Address | None:
+        """Return the remote ``(host, port)`` address, or ``None`` if not connected."""
         if self.sock is None:
             return None
         host, port = self.sock.getpeername()[:2]
         return host, port
 
     def _recv(self, size: int) -> bytes:
+        """Read exactly *size* bytes from the socket into the internal buffer.
+
+        Loops over ``sock.recv`` until the buffer holds enough data, then
+        slices and removes the consumed bytes.
+
+        Args:
+            size: Number of bytes to return.
+
+        Returns:
+            Exactly *size* bytes.
+
+        Raises:
+            ConnectionError: If the remote end closes the connection before
+                *size* bytes have been received.
+        """
         sock = self._require_socket()
         while len(self._buf) < size:
             chunk = sock.recv(8192)
@@ -80,6 +135,16 @@ class BeamConnection:
         return out
 
     def send(self, message_type: MessageType, payload: bytes = b""):
+        """Encrypt and send a single Beam protocol message.
+
+        When outgoing encryption is active the payload is appended with an
+        8-byte HMAC tag before the whole frame is AES-CTR encrypted.  When
+        encryption is not yet active the frame is sent in plain text.
+
+        Args:
+            message_type: Type code identifying the message.
+            payload: Raw message body bytes.  Defaults to an empty payload.
+        """
         sock = self._require_socket()
         if self.sc.out_on:
             header = make_header(message_type, len(payload) + MAC_SIZE)
@@ -91,6 +156,19 @@ class BeamConnection:
         sock.sendall(header + payload)
 
     def recv(self) -> tuple[MessageType, bytes]:
+        """Read exactly one frame from the socket and return it decrypted.
+
+        Reads the 8-byte header first, then the declared payload length.
+        When incoming decryption is active the HMAC tag at the end of the
+        payload is verified before any data is returned.
+
+        Returns:
+            ``(message_type, payload)`` with the MAC stripped.
+
+        Raises:
+            ValueError: On frame-size overflow or HMAC mismatch.
+            ConnectionError: If the connection is closed mid-frame.
+        """
         header = self.sc.decrypt(self._recv(HEADER_SIZE))
         message_type, size = parse_header(header)
         if size > MAX_FRAME_SIZE:
@@ -108,6 +186,23 @@ class BeamConnection:
         return message_type, body
 
     def recv_message(self, timeout: float | None = None) -> tuple[MessageType, bytes]:
+        """Return the next message, respecting an optional per-call timeout.
+
+        Drains the pending queue first (messages queued during the Login
+        handshake).  When the queue is empty, adjusts the socket timeout and
+        calls :meth:`recv`.
+
+        Args:
+            timeout: Seconds to wait for the next frame from the socket.
+                ``None`` blocks indefinitely; ``0`` or negative raises
+                :class:`socket.timeout` immediately.
+
+        Returns:
+            ``(message_type, payload)`` pair.
+
+        Raises:
+            socket.timeout: If no message arrives within *timeout* seconds.
+        """
         if self._pending:
             return self._pending.popleft()
 
@@ -121,12 +216,37 @@ class BeamConnection:
         return self.recv()
 
     def _queue_message(self, message_type: MessageType, payload: bytes):
+        """Park a message in the pending queue for later retrieval via :meth:`recv_message`.
+
+        Called during the Login handshake to hold application-level messages
+        that arrive before the handshake completes.
+
+        Args:
+            message_type: Type code of the message to queue.
+            payload: Decrypted message body.
+        """
         self._pending.append((message_type, payload))
 
     def send_time(self):
+        """Send the current Unix time in response to a GetTime request."""
         self.send(MessageType.TIME, encode_uint(int(time.time())))
 
     def handshake(self, login_flags: int, fork_hashes: list[bytes]):
+        """Perform the full Beam Login handshake over this connection.
+
+        Executes the ``SChannelInitiate → SChannelReady → Login`` sequence,
+        enabling encryption in both directions.  Messages received before the
+        ``Login`` confirmation are either handled inline (GetTime, Ping) or
+        queued for the caller via :meth:`recv_message`.
+
+        Args:
+            login_flags: Bitmask of ``LOGIN_FLAG_*`` constants to request.
+            fork_hashes: List of 32-byte fork-configuration hashes.
+
+        Raises:
+            RuntimeError: If the node replies with an unexpected message type
+                or sends ``Bye`` during the handshake.
+        """
         nonce = self.sc.generate_nonce()
         node = format_address((self.host, self.port))
         self._log(f"[*] {node} SChannelInitiate ->")
@@ -184,6 +304,12 @@ class BeamConnection:
             self._queue_message(message_type, payload)
 
     def close(self):
+        """Send a ``Bye`` message and close the socket.
+
+        Safe to call multiple times.  Errors while sending ``Bye`` are
+        silently ignored so that partially-open connections can always be
+        cleaned up.
+        """
         if self.sock is None:
             return
 
