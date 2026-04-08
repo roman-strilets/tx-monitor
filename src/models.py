@@ -6,7 +6,9 @@ and the monitoring summary (:class:`MonitorResult`), as well as the mutable
 requests during a capture session.
 """
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+
+from src.protocol_models import NewTransactionPayload
 
 
 @dataclass(frozen=True)
@@ -20,7 +22,7 @@ class CaptureRecord:
     raw_payload_hex: str
     payload_size: int
     captured_at: str
-    decoded: dict[str, object] | None = None
+    decoded: NewTransactionPayload | None = None
     decode_error: str | None = None
 
     def as_dict(self) -> dict[str, object]:
@@ -37,7 +39,7 @@ class CaptureRecord:
             "captured_at": self.captured_at,
         }
         if self.decoded is not None:
-            record["decoded"] = self.decoded
+            record["decoded"] = asdict(self.decoded)
         if self.decode_error is not None:
             record["decode_error"] = self.decode_error
         return record

@@ -2,16 +2,17 @@ import json
 import pytest
 from pathlib import Path
 
-from src.deserializer import (
+from src.deserializers import (
     BufferReader,
     DeserializationError,
     KernelSubtype,
-    _get_kernel_subtype_name,
+    get_kernel_subtype_name,
     decode_lsb_bits,
     decode_msb_bits,
     deserialize_kernel,
     deserialize_new_transaction_payload,
 )
+from src.protocol_models import TxCounts
 
 
 def test_decode_msb_bits():
@@ -32,18 +33,18 @@ def test_parse_generated_capture_sample_when_available():
 
     decoded = deserialize_new_transaction_payload(payload)
 
-    assert decoded["transaction_present"]
-    assert decoded["context"] is None
-    assert decoded["fluff"]
-    assert decoded["transaction"]["counts"] == {
-        "inputs": 2,
-        "outputs": 2,
-        "kernels": 1,
-        "kernels_mixed": False,
-    }
-    assert decoded["transaction"]["kernels"][0]["subtype"] == "Std"
-    assert "confidential_proof" in decoded["transaction"]["outputs"][0]
-    assert "asset_proof" in decoded["transaction"]["outputs"][0]
+    assert decoded.transaction_present
+    assert decoded.context is None
+    assert decoded.fluff
+    assert decoded.transaction.counts == TxCounts(
+        inputs=2,
+        outputs=2,
+        kernels=1,
+        kernels_mixed=False,
+    )
+    assert decoded.transaction.kernels[0].subtype == "Std"
+    assert decoded.transaction.outputs[0].confidential_proof is not None
+    assert decoded.transaction.outputs[0].asset_proof is not None
 
 
 def test_kernel_subtype_enum_unsupported_code():
@@ -70,4 +71,4 @@ def test_kernel_subtype_enum_unsupported_code():
 )
 def test_kernel_subtype_display_names(subtype, expected_name):
     """Verify display name helper returns correct strings for all known subtypes."""
-    assert _get_kernel_subtype_name(subtype) == expected_name
+    assert get_kernel_subtype_name(subtype) == expected_name

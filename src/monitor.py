@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from .codec import decode_transaction_id, encode_transaction_id
 from .connection import BeamConnection
-from .deserializer import deserialize_new_transaction_payload
+from .deserializers import deserialize_new_transaction_payload
 from .models import CaptureRecord, MonitorResult, SnapshotState
 from .protocol import (
     DEFAULT_CONNECT_TIMEOUT,
