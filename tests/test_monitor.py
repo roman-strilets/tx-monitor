@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 from src.codec import decode_uint
 from src.connection import build_login_payload
 from src.models import SnapshotState
-from src.monitor import MonitorConfig, TransactionMonitor
+from src.monitor import LiveConfig, TransactionMonitor
 from src.protocol import EXTENSION_VERSION, LOGIN_FLAG_SPREADING_TRANSACTIONS
 from src.utils import extension_bits
 
@@ -72,12 +72,11 @@ def test_requeue_inflight_returns_request_to_pending():
 
 
 def test_live_wait_timeout_blocks_while_idle():
-    config = MonitorConfig(endpoint=("1.2.3.4", 8100), idle_timeout=3.0, live=True)
+    config = LiveConfig(endpoint=("1.2.3.4", 8100))
     monitor = TransactionMonitor(config, MagicMock())
 
     wait_timeout = monitor._next_wait_timeout(
         request_deadline=None,
-        idle_started=0.0,
     )
 
     assert wait_timeout is None

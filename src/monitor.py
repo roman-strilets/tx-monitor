@@ -1,30 +1,23 @@
-"""Transaction monitor for the Beam mempool.
+"""Persistent live transaction monitor for the Beam mempool.
 
-Connects to a Beam node, performs a TLS handshake, and collects every
-transaction the node announces via HaveTransaction messages.  For each
-announced transaction the monitor sends a GetTransaction request and writes
-the retrieved payload to a JsonLineWriter as a CaptureRecord.
+Connects to a Beam node, performs a TLS handshake, and streams every
+transaction the node announces via HaveTransaction messages indefinitely.
+Reconnects automatically on transient errors.  The only way to stop it is
+a ``KeyboardInterrupt``.
 
-Two operating modes are supported:
-
-* **Snapshot mode** (``live=False``): the monitor exits after the node goes
-  quiet for ``idle_timeout`` seconds and the pending queue is empty.
-* **Live mode** (``live=True``): the monitor runs indefinitely, reconnecting
-  automatically on transient errors, and can only be stopped by a
-  ``KeyboardInterrupt``.
+For a one-shot mempool snapshot see :mod:`src.snapshot`.
 """
 import socket
 import sys
 import time
 from dataclasses import dataclass, field
 
-from .codec import decode_transaction_id, encode_transaction_id
-from .connection import BeamConnection
-from .deserializers import deserialize_new_transaction_payload
-from .models import CaptureRecord, MonitorResult, SnapshotState
-from .protocol import (
+from src.codec import decode_transaction_id, encode_transaction_id
+from src.connection import BeamConnection
+from src.deserializers import deserialize_new_transaction_payload
+from src.models import CaptureRecord, MonitorResult, SnapshotState
+from src.protocol import (
     DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_IDLE_TIMEOUT,
     DEFAULT_RECONNECT_DELAY,
     DEFAULT_REQUEST_TIMEOUT,
     LOGIN_FLAG_SPREADING_TRANSACTIONS,
@@ -32,81 +25,119 @@ from .protocol import (
     message_name,
     Address,
 )
-from .storage import JsonLineWriter
-from .utils import format_address, utc_now_iso
+from src.storage import JsonLineWriter
+from src.utils import format_address, utc_now_iso
 
 
 @dataclass(frozen=True)
-class MonitorConfig:
-    """Immutable configuration for a single TransactionMonitor instance.
+class LiveConfig:
+    """Immutable configuration for a persistent live monitor.
 
     Attributes:
-        endpoint: ``(host, port)`` pair that identifies the Beam node to
-            connect to.
+        endpoint: ``(host, port)`` pair identifying the Beam node.
         connect_timeout: Maximum time in seconds to wait while establishing
             the TCP connection.
         request_timeout: Maximum time in seconds to wait for a
             NewTransaction payload after sending a GetTransaction request.
-            If the deadline is exceeded the monitor raises ``TimeoutError``
-            (live mode re-queues the transaction and reconnects instead).
-        idle_timeout: In snapshot mode, the monitor considers the mempool
-            fully captured and exits after this many seconds of inactivity
-            (no new HaveTransaction messages and an empty pending queue).
-            Ignored in live mode.
-        reconnect_delay: Seconds to sleep between reconnection attempts in
-            live mode.  Set to ``0`` to reconnect immediately.
-        fork_hashes: List of the raw fork-ID byte strings sent to the node
+            When the deadline is exceeded the in-flight transaction is
+            re-queued and the monitor reconnects.
+        reconnect_delay: Seconds to sleep between reconnection attempts.
+            Set to ``0`` to reconnect immediately.
+        fork_hashes: List of raw fork-ID byte strings sent to the node
             during the Login handshake.  Pass an empty list if the node
             requires no specific fork.
-        live: ``True`` to run indefinitely, reconnecting on errors.
-            ``False`` (default) to take a one-shot mempool snapshot and exit.
         verbose: ``True`` to emit diagnostic log lines to *stderr*.
     """
+
     endpoint: Address
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT
-    idle_timeout: float = DEFAULT_IDLE_TIMEOUT
     reconnect_delay: float = DEFAULT_RECONNECT_DELAY
     fork_hashes: list[bytes] = field(default_factory=list)
-    live: bool = False
     verbose: bool = False
 
 
-def _log(verbose: bool, message: str):
-    """Print *message* to *stderr* when *verbose* is ``True``.
+def _log(verbose: bool, message: str) -> None:
+    """Print a diagnostic message to stderr when `verbose` is true.
+
+    This small helper centralises conditional verbose logging so callers
+    don't need to check the `verbose` flag themselves.
 
     Args:
-        verbose: Whether logging is enabled.  Nothing is printed when
-            ``False``.
-        message: The text to emit.
+        verbose: If True, the message is printed to `sys.stderr`.
+        message: The text to print.
     """
     if verbose:
         print(message, file=sys.stderr)
 
 
+def _write_capture_record(
+    writer: JsonLineWriter,
+    endpoint: str,
+    verbose: bool,
+    tx_id: bytes,
+    payload: bytes,
+) -> None:
+    """Decode a NewTransaction payload and persist a CaptureRecord.
+
+    Attempts to decode the raw `payload` using
+    :func:`src.deserializers.deserialize_new_transaction_payload`. Any
+    decoding error is captured in the ``decode_error`` field of the written
+    record and logged when ``verbose`` is True.
+
+    The function writes a :class:`src.models.CaptureRecord` to ``writer``
+    containing the following fields: ``node`` (endpoint), ``tx_id`` (hex),
+    ``raw_payload_hex``, ``payload_size``, ``captured_at`` (ISO timestamp),
+    ``decoded`` (decoded payload or ``None``) and ``decode_error`` (error
+    message or ``None``).
+
+    Args:
+        writer: ``JsonLineWriter`` used to persist the record.
+        endpoint: Formatted node address string.
+        verbose: If True, emit diagnostic log lines.
+        tx_id: Raw transaction id bytes (will be hex-encoded).
+        payload: Raw NewTransaction payload bytes.
+
+    Side effects:
+        Calls ``writer.write(...)`` and may call :func:`_log`. Exceptions
+        raised by ``writer.write`` are propagated to the caller.
+    """
+    decoded = None
+    decode_error = None
+    try:
+        decoded = deserialize_new_transaction_payload(payload)
+    except Exception as exc:
+        decode_error = str(exc)
+        _log(verbose, f"[*] {endpoint} failed to decode tx {tx_id.hex()}: {exc}")
+
+    writer.write(
+        CaptureRecord(
+            node=endpoint,
+            tx_id=tx_id.hex(),
+            raw_payload_hex=payload.hex(),
+            payload_size=len(payload),
+            captured_at=utc_now_iso(),
+            decoded=decoded,
+            decode_error=decode_error,
+        )
+    )
+    _log(verbose, f"[*] {endpoint} captured tx {tx_id.hex()}")
+
+
 class TransactionMonitor:
-    """Connects to a Beam node and captures mempool transactions.
+    """Connects to a Beam node and streams mempool transactions indefinitely.
 
-    The monitor maintains a ``SnapshotState`` that tracks which transactions
-    have been announced, which are still pending retrieval, and which are
-    in-flight (i.e. a GetTransaction request has been sent but the
-    NewTransaction reply has not yet arrived).  The main loop drives the
-    state machine by calling ``SnapshotState.begin_request`` at the top of
-    every iteration and dispatching incoming messages accordingly.
-
-    All captured transactions are serialised to the provided
-    ``JsonLineWriter`` as ``CaptureRecord`` objects.  When the monitor
-    finishes (either because the snapshot is complete or because a
-    ``KeyboardInterrupt`` is received) it returns a ``MonitorResult``
-    summary.
+    Maintains a ``SnapshotState`` tracking announced, pending, and in-flight
+    transactions.  Reconnects automatically after transient errors.  The only
+    way to stop the monitor is a ``KeyboardInterrupt``.
     """
 
-    def __init__(self, config: MonitorConfig, writer: JsonLineWriter):
+    def __init__(self, config: LiveConfig, writer: JsonLineWriter):
         """Initialise the monitor.
 
         Args:
-            config: Immutable settings that control connection behaviour,
-                timeouts, and operating mode.
+            config: Immutable settings that control connection behaviour and
+                timeouts.
             writer: Output sink that receives one ``CaptureRecord`` JSON line
                 per successfully retrieved transaction.
         """
@@ -119,44 +150,30 @@ class TransactionMonitor:
         self.reconnects = 0
 
     def _log(self, message: str):
-        """Emit *message* to *stderr* when verbose logging is enabled.
+        """Log a message using the monitor's configured verbosity.
+
+        Wrapper around module-level ``_log`` that uses ``self.config.verbose``
+        so instance methods can simply call ``self._log(message)``.
 
         Args:
-            message: Diagnostic text to print.
+            message: The message to emit when verbosity is enabled.
         """
         _log(self.config.verbose, message)
 
     def _next_wait_timeout(
         self,
         request_deadline: float | None,
-        idle_started: float,
     ) -> float | None:
         """Compute the receive timeout for the next ``recv_message`` call.
 
-        The returned value is interpreted as follows:
-
-        * **positive float** – block for at most this many seconds.
-        * **0.0** – do a non-blocking check (there is work to dispatch
-          immediately or the idle deadline has already passed).
-        * **None** – block indefinitely (live mode with nothing in-flight
-          and an empty pending queue).
-
-        Args:
-            request_deadline: Absolute ``time.monotonic()`` timestamp by
-                which the in-flight GetTransaction reply must arrive, or
-                ``None`` when no request is currently in-flight.
-            idle_started: ``time.monotonic()`` timestamp recorded the last
-                time the pending queue became empty.  Used to determine how
-                much of the idle timeout remains in snapshot mode.
-
         Returns:
-            Seconds to wait, ``0.0`` for a non-blocking poll, or ``None``
-            to block indefinitely.
+            Positive float to block until the request deadline, ``0.0`` for a
+            non-blocking poll when there is pending work, or ``None`` to block
+            indefinitely when the queue is empty.
 
         Raises:
             RuntimeError: When a transaction is in-flight but
-                *request_deadline* is ``None``, which indicates a
-                programming error.
+                *request_deadline* is ``None``.
         """
         now = time.monotonic()
         if self.state.in_flight is not None:
@@ -167,94 +184,32 @@ class TransactionMonitor:
         if self.state.has_pending():
             return 0.0
 
-        if self.config.live:
-            return None
-
-        return max(self.config.idle_timeout - (now - idle_started), 0.0)
-
-    def _write_capture_record(
-        self,
-        tx_id: bytes,
-        payload: bytes,
-    ):
-        """Deserialize *payload* and persist the result as a CaptureRecord.
-
-        Attempts to fully deserialize the raw NewTransaction payload.  If
-        deserialization fails the record is still written with the raw hex
-        payload and the exception message stored in ``decode_error``, so no
-        data is silently lost.
-
-        Args:
-            tx_id: 32-byte transaction identifier.  Used as the record key
-                and for diagnostic log messages.
-            payload: Raw bytes of the NewTransaction message body as
-                received from the node.
-        """
-        decoded = None
-        decode_error = None
-        try:
-            decoded = deserialize_new_transaction_payload(payload)
-        except Exception as exc:
-            decode_error = str(exc)
-            self._log(
-                f"[*] {self.endpoint} failed to decode tx {tx_id.hex()}: {exc}",
-            )
-
-        self.writer.write(
-            CaptureRecord(
-                node=self.endpoint,
-                tx_id=tx_id.hex(),
-                raw_payload_hex=payload.hex(),
-                payload_size=len(payload),
-                captured_at=utc_now_iso(),
-                decoded=decoded,
-                decode_error=decode_error,
-            )
-        )
-        self._log(f"[*] {self.endpoint} captured tx {tx_id.hex()}")
+        return None  # Idle: block indefinitely waiting for new announcements.
 
     def _monitor_connection(
         self,
         connection: BeamConnection,
-    ) -> bool:
+    ) -> None:
         """Run the capture loop over a single established connection.
 
         Connects, completes the Login handshake, then processes messages
-        from the node in a loop until one of the following conditions is
-        met:
-
-        * The pending queue is empty, no request is in-flight, and either
-          the idle timeout has elapsed (snapshot mode) or a Bye message was
-          received.
-        * A ``TimeoutError`` is raised because a GetTransaction reply did
-          not arrive within ``request_timeout`` (propagated to the caller).
-        * A ``ConnectionError`` or other ``OSError`` is raised (propagated;
-          in live mode the caller reconnects).
+        until a ``TimeoutError``, ``ConnectionError``, or other ``OSError``
+        terminates the session.  The caller catches these and reconnects.
 
         Args:
-            connection: A freshly created, not-yet-connected ``BeamConnection``
-                instance.  This method calls ``connection.connect()`` and
-                ``connection.handshake()`` internally.
-
-        Returns:
-            ``True`` when the capture session completed normally (the memo
-            pool snapshot is considered done).  The caller should not
-            reconnect in this case.
+            connection: A freshly created, not-yet-connected ``BeamConnection``.
 
         Raises:
-            TimeoutError: A pending GetTransaction request was not answered
-                within ``config.request_timeout`` seconds.
-            ConnectionError: The node closed the connection unexpectedly
-                while transactions were still pending.
-            RuntimeError: An internal invariant was violated (should not
-                happen under normal operation).
+            TimeoutError: A GetTransaction reply did not arrive within
+                ``config.request_timeout`` seconds.  The in-flight transaction
+                is re-queued before raising.
+            ConnectionError: The node closed the connection or sent Bye.
+                The in-flight transaction is re-queued before raising.
         """
         request_deadline: float | None = None
-        idle_started = time.monotonic()
 
         connection.connect()
         connection.handshake(LOGIN_FLAG_SPREADING_TRANSACTIONS, self.config.fork_hashes)
-        idle_started = time.monotonic()
 
         while True:
             next_tx_id = self.state.begin_request()
@@ -263,38 +218,26 @@ class TransactionMonitor:
                 request_deadline = time.monotonic() + self.config.request_timeout
                 self._log(f"[*] {self.endpoint} requested tx {next_tx_id.hex()}")
 
-            wait_timeout = self._next_wait_timeout(
-                request_deadline,
-                idle_started,
-            )
-            if wait_timeout == 0 and self.state.is_idle():
-                return True
+            wait_timeout = self._next_wait_timeout(request_deadline)
 
             try:
                 message_type, payload = connection.recv_message(wait_timeout)
             except socket.timeout:
-                now = time.monotonic()
-                if self.state.in_flight is not None and request_deadline is not None:
-                    if now >= request_deadline:
-                        tx_id = self.state.in_flight
-                        if self.config.live:
-                            self.state.requeue_inflight()
-                        raise TimeoutError(
-                            "timed out waiting for NewTransaction payload for "
-                            f"{tx_id.hex()}"
-                        )
-                if not self.config.live and self.state.is_idle() and now - idle_started >= self.config.idle_timeout:
-                    return True
+                if (
+                    self.state.in_flight is not None
+                    and request_deadline is not None
+                    and time.monotonic() >= request_deadline
+                ):
+                    tx_id = self.state.in_flight
+                    self.state.requeue_inflight()
+                    raise TimeoutError(
+                        "timed out waiting for NewTransaction payload for "
+                        f"{tx_id.hex()}"
+                    )
                 continue
             except ConnectionError:
-                if self.config.live:
-                    self.state.requeue_inflight()
-                    raise
-                if self.state.is_idle():
-                    return True
-                raise RuntimeError(
-                    "connection closed before the mem-pool snapshot completed"
-                )
+                self.state.requeue_inflight()
+                raise
 
             if message_type == MessageType.HAVE_TRANSACTION:
                 try:
@@ -302,9 +245,7 @@ class TransactionMonitor:
                 except ValueError as exc:
                     self._log(f"[*] {self.endpoint} ignored invalid tx id: {exc}")
                     continue
-
                 if self.state.observe_announcement(tx_id):
-                    idle_started = time.monotonic()
                     self._log(f"[*] {self.endpoint} announced tx {tx_id.hex()}")
                 else:
                     self.duplicates += 1
@@ -317,9 +258,7 @@ class TransactionMonitor:
                     continue
                 tx_id = self.state.complete_request()
                 request_deadline = None
-                self._write_capture_record(tx_id, payload)
-                if self.state.is_idle():
-                    idle_started = time.monotonic()
+                _write_capture_record(self.writer, self.endpoint, self.config.verbose, tx_id, payload)
                 continue
 
             if message_type == MessageType.GET_TIME:
@@ -331,12 +270,8 @@ class TransactionMonitor:
                 continue
 
             if message_type == MessageType.BYE:
-                if self.config.live:
-                    self.state.requeue_inflight()
-                    raise ConnectionError("node sent Bye")
-                if self.state.is_idle():
-                    return True
-                raise RuntimeError("node sent Bye before the mem-pool snapshot completed")
+                self.state.requeue_inflight()
+                raise ConnectionError("node sent Bye")
 
             if message_type in {
                 MessageType.TIME,
@@ -353,23 +288,14 @@ class TransactionMonitor:
             self._log(f"[*] {self.endpoint} ignored {name} ({len(payload)}B)")
 
     def run(self) -> MonitorResult:
-        """Execute the monitor until completion or interruption.
+        """Stream transactions indefinitely until interrupted.
 
-        In snapshot mode (``config.live=False``) the method returns as soon
-        as ``_monitor_connection`` signals that the session is complete.
-        Any ``OSError`` propagates immediately.
-
-        In live mode (``config.live=True``) the method loops forever,
-        reconnecting after transient ``OSError`` failures and pausing
-        ``config.reconnect_delay`` seconds between attempts.  The only way
-        to stop it is a ``KeyboardInterrupt``.
+        Loops forever, reconnecting after transient ``OSError`` failures and
+        sleeping ``config.reconnect_delay`` seconds between attempts.  The
+        only way to stop the monitor is a ``KeyboardInterrupt``.
 
         Returns:
-            A ``MonitorResult`` summarising how many transactions were
-            announced, successfully captured, and how many duplicate
-            announcements were observed, along with wall-clock duration and
-            reconnect count.  ``stopped=True`` when the run was interrupted
-            by the user.
+            A ``MonitorResult`` with ``live=True`` and ``stopped=True``.
         """
         self.started = time.monotonic()
 
@@ -379,39 +305,23 @@ class TransactionMonitor:
                     host=self.config.endpoint[0],
                     port=self.config.endpoint[1],
                     connect_timeout=self.config.connect_timeout,
-                    read_timeout=max(self.config.request_timeout, self.config.idle_timeout, 1.0),
+                    read_timeout=max(self.config.request_timeout, 1.0),
                     verbose=self.config.verbose,
                 )
                 try:
-                    completed = self._monitor_connection(connection)
-                    if completed:
-                        break
+                    self._monitor_connection(connection)
                 except OSError as exc:
-                    if not self.config.live:
-                        raise
                     self.reconnects += 1
                     self._log(
-                        (
-                            f"[*] {self.endpoint} reconnecting after {exc}; "
-                            f"sleeping {self.config.reconnect_delay:g}s"
-                        )
+                        f"[*] {self.endpoint} reconnecting after {exc}; "
+                        f"sleeping {self.config.reconnect_delay:g}s"
                     )
                     if self.config.reconnect_delay > 0:
                         time.sleep(self.config.reconnect_delay)
                 finally:
                     connection.close()
         except KeyboardInterrupt:
-            duration = time.monotonic() - self.started
-            return MonitorResult(
-                node=self.endpoint,
-                announced=len(self.state.announced),
-                captured=len(self.state.captured),
-                duplicates=self.duplicates,
-                duration_seconds=duration,
-                live=self.config.live,
-                reconnects=self.reconnects,
-                stopped=True,
-            )
+            pass
 
         duration = time.monotonic() - self.started
         return MonitorResult(
@@ -420,22 +330,20 @@ class TransactionMonitor:
             captured=len(self.state.captured),
             duplicates=self.duplicates,
             duration_seconds=duration,
-            live=self.config.live,
+            live=True,
             reconnects=self.reconnects,
+            stopped=True,
         )
 
 
 def run_transaction_monitor(
-    config: MonitorConfig,
+    config: LiveConfig,
     writer: JsonLineWriter,
 ) -> MonitorResult:
-    """Create a ``TransactionMonitor`` and run it to completion.
-
-    Convenience wrapper used by the CLI entry-point so that callers do not
-    need to instantiate ``TransactionMonitor`` directly.
+    """Create a ``TransactionMonitor`` and run it until interrupted.
 
     Args:
-        config: Connection settings and operating-mode flags for the monitor.
+        config: Connection settings for the live monitor.
         writer: Output sink that receives one JSON line per captured
             transaction.
 
