@@ -1,14 +1,14 @@
-"""Data models used by the Beam transaction monitor.
+"""Data models used by the Beam transaction monitor and block fetcher.
 
 Contains frozen dataclasses for the output record (:class:`CaptureRecord`)
-and the monitoring summary (:class:`MonitorResult`), as well as the mutable
-:class:`SnapshotState` that tracks pending and in-flight transaction
-requests during a capture session.
+and the monitoring summary (:class:`MonitorResult`), block-fetch record and
+result types, and the mutable :class:`SnapshotState` that tracks pending and
+in-flight transaction requests during a capture session.
 """
 from collections import deque
 from dataclasses import asdict, dataclass, field
 
-from src.protocol_models import NewTransactionPayload
+from src.protocol_models import DecodedBlock, NewTransactionPayload
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,36 @@ class CaptureRecord:
 
 
 @dataclass(frozen=True)
+class BlockCaptureRecord:
+    """Immutable record of a single fetched Beam block."""
+
+    node: str
+    requested_height: int
+    resolved_height: int | None
+    resolved_hash: str | None
+    captured_at: str
+    decoded: DecodedBlock | None = None
+    decode_error: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Return a JSON-serialisable dictionary representation of this record."""
+        record: dict[str, object] = {
+            "node": self.node,
+            "requested_height": self.requested_height,
+            "captured_at": self.captured_at,
+        }
+        if self.resolved_height is not None:
+            record["resolved_height"] = self.resolved_height
+        if self.resolved_hash is not None:
+            record["resolved_hash"] = self.resolved_hash
+        if self.decoded is not None:
+            record["decoded"] = asdict(self.decoded)
+        if self.decode_error is not None:
+            record["decode_error"] = self.decode_error
+        return record
+
+
+@dataclass(frozen=True)
 class MonitorResult:
     """Summary returned by :meth:`~src.monitor.TransactionMonitor.run`.
 
@@ -61,6 +91,23 @@ class MonitorResult:
     live: bool = False
     reconnects: int = 0
     stopped: bool = False
+
+
+@dataclass(frozen=True)
+class BlockFetchResult:
+    """Summary returned by the one-shot block fetch flow."""
+
+    node: str
+    requested_height: int
+    resolved_height: int
+    resolved_hash: str
+    inputs: int
+    outputs: int
+    kernels: int
+    duration_seconds: float
+
+
+JsonLineRecord = CaptureRecord | BlockCaptureRecord
 
 
 @dataclass

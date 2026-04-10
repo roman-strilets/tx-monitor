@@ -46,6 +46,49 @@ def build_login_payload(login_flags: int, fork_hashes: list[bytes]) -> bytes:
     return bytes(buf)
 
 
+def parse_login_payload(payload: bytes) -> tuple[list[bytes], int]:
+    """Parse a Beam Login payload.
+
+    The payload contains a compact hash-count, that many 32-byte fork hashes,
+    and a compact flags field.
+
+    Args:
+        payload: Raw Login payload bytes.
+
+    Returns:
+        Tuple of ``(fork_hashes, flags)``.
+
+    Raises:
+        ValueError: If the payload is malformed.
+    """
+    try:
+        count, size = decode_uint(payload)
+    except IndexError as exc:
+        raise ValueError("login payload is empty") from exc
+
+    offset = size
+    fork_hashes: list[bytes] = []
+    for _ in range(count):
+        end = offset + 32
+        if end > len(payload):
+            raise ValueError("login payload ended before all fork hashes were read")
+        fork_hashes.append(payload[offset:end])
+        offset = end
+
+    try:
+        flags, size = decode_uint(payload, offset)
+    except IndexError as exc:
+        raise ValueError("login payload is missing the flags field") from exc
+
+    offset += size
+    if offset != len(payload):
+        raise ValueError(
+            f"login payload has {len(payload) - offset} trailing byte(s)"
+        )
+
+    return fork_hashes, flags
+
+
 class BeamConnection:
     """Manages a single TCP connection to a Beam node.
 
@@ -81,6 +124,8 @@ class BeamConnection:
         self.sc = SecureChannel()
         self._buf = bytearray()
         self._pending = deque()
+        self.peer_fork_hashes: list[bytes] = []
+        self.peer_login_flags: int | None = None
 
     def _log(self, message: str):
         """Print *message* to *stderr* when verbose logging is enabled."""
@@ -296,6 +341,12 @@ class BeamConnection:
                 continue
             if message_type == MessageType.LOGIN:
                 self._log(f"[*] {node} <- Login")
+                try:
+                    self.peer_fork_hashes, self.peer_login_flags = parse_login_payload(
+                        payload
+                    )
+                except ValueError as exc:
+                    raise RuntimeError(f"invalid Login payload: {exc}") from exc
                 saw_login = True
                 continue
 

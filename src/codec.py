@@ -48,6 +48,93 @@ def decode_uint(buf: bytes | bytearray, offset: int = 0) -> tuple[int, int]:
     return int.from_bytes(buf[offset + 1 : offset + 1 + count], "little"), 1 + count
 
 
+def encode_height_range(min_height: int, max_height: int) -> bytes:
+    """Encode a Beam ``HeightRange`` payload.
+
+    Beam serializes a height range as ``min`` followed by ``max - min`` using
+    the same compact unsigned-integer encoding as other protocol integers.
+
+    Args:
+        min_height: Inclusive lower bound.
+        max_height: Inclusive upper bound.
+
+    Returns:
+        Encoded bytes for the range.
+
+    Raises:
+        ValueError: If the range bounds are invalid.
+    """
+    if min_height < 0:
+        raise ValueError(f"minimum height must be >= 0, got {min_height}")
+    if max_height < min_height:
+        raise ValueError(
+            f"maximum height {max_height} must be >= minimum height {min_height}"
+        )
+
+    return encode_uint(min_height) + encode_uint(max_height - min_height)
+
+
+def encode_system_state_id(height: int, block_hash: bytes) -> bytes:
+    """Encode a Beam ``Block::SystemState::ID`` payload.
+
+    Layout: compact block number followed by the 32-byte block hash.
+
+    Args:
+        height: Block height / number.
+        block_hash: Raw 32-byte block hash.
+
+    Returns:
+        Encoded system-state identifier.
+
+    Raises:
+        ValueError: If the arguments are invalid.
+    """
+    if height < 0:
+        raise ValueError(f"block height must be >= 0, got {height}")
+    if len(block_hash) != 32:
+        raise ValueError(f"block hash must be 32 bytes, got {len(block_hash)}")
+
+    return encode_uint(height) + block_hash
+
+
+def encode_get_body_pack_payload(
+    *,
+    top_height: int,
+    top_hash: bytes,
+    flag_perishable: int,
+    flag_eternal: int,
+    count_extra: int,
+    block0: int,
+    horizon_lo1: int,
+    horizon_hi1: int,
+) -> bytes:
+    """Encode a Beam ``GetBodyPack`` request payload.
+
+    Args:
+        top_height: Height of the ``m_Top`` state.
+        top_hash: Hash of the ``m_Top`` state.
+        flag_perishable: Requested perishable-body format.
+        flag_eternal: Requested eternal-body format.
+        count_extra: Number of preceding blocks to request in the pack.
+        block0: Request ``m_Block0`` field.
+        horizon_lo1: Request ``m_HorizonLo1`` field.
+        horizon_hi1: Request ``m_HorizonHi1`` field.
+
+    Returns:
+        Encoded ``GetBodyPack`` bytes.
+    """
+    return b"".join(
+        (
+            encode_system_state_id(top_height, top_hash),
+            bytes((flag_perishable, flag_eternal)),
+            encode_uint(count_extra),
+            encode_uint(block0),
+            encode_uint(horizon_lo1),
+            encode_uint(horizon_hi1),
+        )
+    )
+
+
 def make_header(message_type: MessageType, size: int) -> bytes:
     """Build an 8-byte Beam message frame header.
 

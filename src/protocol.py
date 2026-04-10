@@ -36,10 +36,16 @@ class MessageType(IntEnum):
     PEER_INFO = 0x08
     GET_TIME = 0x0B
     TIME = 0x0C
+    DATA_MISSING = 0x0D
     LOGIN = 0x0F
     NEW_TIP = 0x10
+    HDR_PACK = 0x14
+    BODY = 0x16
+    GET_BODY_PACK = 0x26
+    BODY_PACK = 0x27
     HAVE_TRANSACTION = 0x31
     GET_TRANSACTION = 0x32
+    ENUM_HDRS = 0x33
     STATUS = 0x44
     NEW_TRANSACTION = 0x49
 
@@ -54,10 +60,16 @@ MESSAGE_NAMES = {
     MessageType.PEER_INFO: "PeerInfo",
     MessageType.GET_TIME: "GetTime",
     MessageType.TIME: "Time",
+    MessageType.DATA_MISSING: "DataMissing",
     MessageType.LOGIN: "Login",
     MessageType.NEW_TIP: "NewTip",
+    MessageType.HDR_PACK: "HdrPack",
+    MessageType.BODY: "Body",
+    MessageType.GET_BODY_PACK: "GetBodyPack",
+    MessageType.BODY_PACK: "BodyPack",
     MessageType.HAVE_TRANSACTION: "HaveTransaction",
     MessageType.GET_TRANSACTION: "GetTransaction",
+    MessageType.ENUM_HDRS: "EnumHdrs",
     MessageType.STATUS: "Status",
     MessageType.NEW_TRANSACTION: "NewTransaction",
 }

@@ -9,6 +9,9 @@ from src.protocol_models import (
     InnerProduct,
     LrPair,
     PublicRangeProof,
+    RecoveryAssetProof,
+    RecoveryConfidentialRangeProof,
+    RecoveryPublicRangeProof,
     Recovery,
     LelantusProof,
     ShieldedSignature,
@@ -47,16 +50,35 @@ class SigmaConfig:
 
 
 def deserialize_confidential_range_proof(reader: BufferReader) -> ConfidentialRangeProof:
-    """Deserialize a confidential range proof from the buffer.
+    """Deserialize a confidential (Pedersen-style) range proof from the buffer.
 
-    Reads curve points, inner-product rounds, condensed scalars, and bit
-    flags required to reconstruct a ConfidentialRangeProof model.
+    The encoded layout consumed from ``reader`` is:
+      - Four 32-byte X-coordinates for points A, S, T1, T2 (read via ``read_fixed_hex(32)``).
+      - Scalars ``tau_x``, ``mu``, and ``t_dot`` (each read with ``read_scalar()``).
+      - ``INNER_PRODUCT_CYCLES`` inner-product rounds; each round contains a left
+        and right 32-byte X-coordinate.
+      - Two condensed scalars (read with ``read_scalar()`` twice).
+      - A bitfield encoding the parity/format flags for all points:
+        ``INNER_PRODUCT_CYCLES * 2`` bits for the inner-product points
+        (left/right for each round) followed by four bits for A, S, T1, T2.
+        The bitfield is read and decoded via ``decode_lsb_bits()``.
+
+    The function reconstructs a :class:`ConfidentialRangeProof` where each
+    curve point is represented as an :class:`EcPoint(x_hex, is_full_point)`
+    using the corresponding parity bit from the decoded bitfield.
 
     Args:
-        reader: BufferReader positioned at the start of a confidential range proof.
+        reader (BufferReader): Reader positioned at the start of the confidential range proof.
 
     Returns:
-        ConfidentialRangeProof: Parsed confidential range proof instance.
+        ConfidentialRangeProof: Populated proof object with fields:
+            - ``a``, ``s``, ``t1``, ``t2``: :class:`EcPoint` instances (X coordinate + parity).
+            - ``tau_x``, ``mu``, ``t_dot``: scalar values.
+            - ``inner_product``: :class:`InnerProduct` containing `rounds` (list of :class:`LrPair`)
+              and ``condensed`` scalars.
+
+    Raises:
+        Any exceptions raised by :class:`BufferReader` if the input is truncated or malformed.
     """
     a_x = reader.read_fixed_hex(32)
     s_x = reader.read_fixed_hex(32)
@@ -100,15 +122,19 @@ def deserialize_confidential_range_proof(reader: BufferReader) -> ConfidentialRa
 
 
 def deserialize_public_range_proof(reader: BufferReader) -> PublicRangeProof:
-    """Deserialize a public range proof payload.
+    """Deserialize a public (non-confidential) range proof payload.
 
-    Reads the public value, kernel signature and recovery information.
+    Reads a variable-length public ``value``, a kernel signature, and recovery
+    information used to locate or validate the public output.
 
     Args:
-        reader: BufferReader positioned at the start of a public range proof.
+        reader (BufferReader): Reader positioned at the start of a public range proof.
 
     Returns:
-        PublicRangeProof: Parsed public range proof.
+        PublicRangeProof: Object with attributes:
+            - ``value`` (int): the publicly exposed value (read via ``read_var_uint()``).
+            - ``signature`` (KernelSignature): contains ``nonce_pub`` (point) and ``k`` (scalar).
+            - ``recovery`` (Recovery): recovery metadata with ``idx``, ``type``, ``sub_idx``, and ``checksum``.
     """
     return PublicRangeProof(
         kind="public",
@@ -126,17 +152,119 @@ def deserialize_public_range_proof(reader: BufferReader) -> PublicRangeProof:
     )
 
 
-def deserialize_asset_proof(reader: BufferReader) -> AssetProof:
-    """Deserialize an asset proof.
+def deserialize_recovery_confidential_range_proof(
+    reader: BufferReader,
+) -> RecoveryConfidentialRangeProof:
+    """Deserialize a recovery-only confidential range proof.
 
-    Parses a fixed-format Sigma proof used for asset operations. This uses a
-    fixed Sigma configuration (n=ASSET_PROOF_N, M=ASSET_PROOF_M).
+    Beam's Recovery1 block-body encoding stores a compact recovery payload that
+    contains only the X-coordinates of the four curve points (A, S, T1, T2),
+    the ``mu`` scalar, and a single flags byte packing the parity bits for
+    those points.
+
+    Encoding read by this function:
+      - Four 32-byte X-coordinates (A, S, T1, T2).
+      - Scalar ``mu`` (read via ``read_scalar()``).
+      - One ``u8`` flags byte: bit 0 -> A parity, bit 1 -> S parity,
+        bit 2 -> T1 parity, bit 3 -> T2 parity.
 
     Args:
-        reader: BufferReader positioned at the start of an asset proof.
+        reader (BufferReader): Reader positioned at the start of the recovery payload.
 
     Returns:
-        AssetProof: Parsed asset proof including generator and sigma proof.
+        RecoveryConfidentialRangeProof: Object with ``a``, ``s``, ``t1``, ``t2`` as :class:`EcPoint`
+        instances built from the X-coordinates and parity bits, and ``mu`` scalar.
+
+    Raises:
+        Exceptions from :class:`BufferReader` for truncated or invalid input.
+    """
+    a_x = reader.read_fixed_hex(32)
+    s_x = reader.read_fixed_hex(32)
+    t1_x = reader.read_fixed_hex(32)
+    t2_x = reader.read_fixed_hex(32)
+    mu = reader.read_scalar()
+    flags = reader.read_u8()
+
+    return RecoveryConfidentialRangeProof(
+        kind="confidential_recovery",
+        a=EcPoint(a_x, bool(flags & 1)),
+        s=EcPoint(s_x, bool(flags & 2)),
+        t1=EcPoint(t1_x, bool(flags & 4)),
+        t2=EcPoint(t2_x, bool(flags & 8)),
+        mu=mu,
+    )
+
+
+def deserialize_recovery_public_range_proof(
+    reader: BufferReader,
+) -> RecoveryPublicRangeProof:
+    """Deserialize a recovery-only public range proof.
+
+    Reads the public ``value`` and a compact ``Recovery`` structure encoded
+    as big-endian integers and a 32-byte checksum/hash.
+
+    Args:
+        reader (BufferReader): Reader positioned at the start of the recovery payload.
+
+    Returns:
+        RecoveryPublicRangeProof: Contains ``value`` (int) and ``recovery`` (Recovery).
+
+    Raises:
+        Exceptions from :class:`BufferReader` on read errors.
+    """
+    return RecoveryPublicRangeProof(
+        kind="public_recovery",
+        value=reader.read_var_uint(),
+        recovery=Recovery(
+            idx=reader.read_big_uint(8),
+            type=reader.read_big_uint(4),
+            sub_idx=reader.read_big_uint(4),
+            checksum=reader.read_hash32(),
+        ),
+    )
+
+
+def deserialize_recovery_asset_proof(reader: BufferReader) -> RecoveryAssetProof:
+    """Deserialize the recovery-only asset proof payload.
+
+    The recovery asset proof encoding contains a single EC point used as the
+    asset generator. The point is read using the reader's point deserialization
+    and returned wrapped in a :class:`RecoveryAssetProof`.
+
+    Args:
+        reader (BufferReader): Reader positioned at the start of the recovery asset payload.
+
+    Returns:
+        RecoveryAssetProof: Model with ``generator`` set to the parsed :class:`EcPoint`.
+
+    Raises:
+        Exceptions from :class:`BufferReader` on malformed input.
+    """
+    return RecoveryAssetProof(generator=reader.read_point())
+
+
+def deserialize_asset_proof(reader: BufferReader) -> AssetProof:
+    """Deserialize an asset proof used by asset-control kernels.
+
+    Format:
+      - ``begin`` (varuint): a starting index value associated with the proof.
+      - ``generator`` X-coordinate (32 bytes).
+      - A nested Sigma proof encoded with a fixed configuration
+        (``n=ASSET_PROOF_N``, ``M=ASSET_PROOF_M``). The nested Sigma proof
+        returns one extra boolean which encodes the generator parity.
+
+    Args:
+        reader (BufferReader): Reader positioned at the start of the asset proof.
+
+    Returns:
+        AssetProof: Model with fields:
+            - ``begin`` (int)
+            - ``generator`` (:class:`EcPoint`) constructed from the generator X
+              coordinate and the extra parity bit returned by the Sigma proof.
+            - ``sigma`` (:class:`SigmaProof`) the parsed nested Sigma proof.
+
+    Raises:
+        Exceptions raised by :func:`deserialize_sigma_proof` or the reader on malformed input.
     """
     cfg = SigmaConfig(n=ASSET_PROOF_N, M=ASSET_PROOF_M)
     begin = reader.read_var_uint()
@@ -150,16 +278,31 @@ def deserialize_asset_proof(reader: BufferReader) -> AssetProof:
 
 
 def deserialize_lelantus_proof(reader: BufferReader) -> LelantusProof:
-    """Deserialize a LELANTUS spend proof.
+    """Deserialize a Lelantus (shielded spend) proof.
 
-    Reads the Sigma configuration, commitment, spend public key, nonce public,
-    two signature scalars and the embedded Sigma proof.
+    Encoding layout:
+      - Two varuints defining the Sigma configuration: ``n`` and ``M``.
+      - Three 32-byte X-coordinates: ``commitment``, ``spend_pk``, ``nonce_pub``.
+      - Two signature scalars ``p_k0`` and ``p_k1``.
+      - A nested Sigma proof; this function requests ``extra_bits=3`` from the
+        Sigma parser so that parity flags for the three X-coordinates are
+        returned alongside the proof.
+
+    The returned :class:`LelantusProof` contains:
+      - ``cfg``: :class:`SigmaConfigInfo` with `n`, `M`, `N` (n**M), and `f_count`.
+      - ``commitment`` and ``spend_pk``: :class:`EcPoint` built using the parity bits.
+      - ``signature``: :class:`ShieldedSignature` with ``nonce_pub`` (an :class:`EcPoint`)
+         and two scalars ``k``.
+      - ``sigma``: the nested :class:`SigmaProof`.
 
     Args:
-        reader: BufferReader positioned at the start of a LELANTUS proof.
+        reader (BufferReader): Reader positioned at the start of the Lelantus proof.
 
     Returns:
-        LelantusProof: Parsed LELANTUS proof structure.
+        LelantusProof: Parsed Lelantus proof model as described above.
+
+    Raises:
+        Exceptions from :class:`BufferReader` or :func:`deserialize_sigma_proof` on malformed input.
     """
     cfg = SigmaConfig(
         n=reader.read_var_uint(),
@@ -188,20 +331,36 @@ def deserialize_sigma_proof(
     cfg: SigmaConfig,
     extra_bits: int,
 ) -> tuple[SigmaProof, list[bool]]:
-    """Deserialize a Sigma proof and return the proof and extra bit flags.
+    """Deserialize a Sigma proof and return the proof plus trailing boolean flags.
 
-    Reads the A/B/C/D curve points, z-scalars, generator points, the `f`
-    scalars and the MSB-encoded bit flags. Returns a tuple of the constructed
-    SigmaProof model and the list of extra boolean flags that follow the core
-    per-point flags.
+    Layout consumed from ``reader``:
+      - Four 32-byte X-coordinates for points ``A``, ``B``, ``C``, ``D``.
+      - Three scalars ``z_a``, ``z_c``, ``z_r``.
+      - ``cfg.M`` 32-byte X-coordinates for the generator points ``g_points``.
+      - ``cfg.f_count`` scalars for the proof's ``f`` vector.
+      - A packed bitfield (MSB-ordered) of length ``4 + cfg.M + extra_bits``:
+        - bits 0..3: parity flags for A, B, C, D respectively.
+        - bits 4..(4+M-1): parity flags for each generator in ``g_points``.
+        - the remaining ``extra_bits`` are returned to the caller as booleans
+          and are not interpreted by the Sigma parser itself.
+
+    Decoding notes:
+      - The implementation reads the minimal number of bytes needed for the
+        bitfield and decodes them with ``decode_msb_bits()`` so the caller
+        receives a list of booleans in MSB-first order.
 
     Args:
-        reader: BufferReader positioned at the start of the sigma proof.
-        cfg: SigmaConfig describing proof dimensions (`n` and `M`).
-        extra_bits: Number of extra boolean bits to extract after core flags.
+        reader (BufferReader): Reader positioned at the start of the Sigma proof payload.
+        cfg (SigmaConfig): Configuration describing the proof shape (`n` and `M`).
+        extra_bits (int): Number of trailing boolean flags to extract and return.
 
     Returns:
-        Tuple[ SigmaProof, list[bool] ]: The parsed SigmaProof and remaining booleans.
+        Tuple[SigmaProof, list[bool]]: A tuple where the first element is the parsed
+        :class:`SigmaProof` and the second is the list of trailing boolean flags
+        (length ``extra_bits``).
+
+    Raises:
+        Exceptions from :class:`BufferReader` on malformed or truncated input.
     """
     a_x = reader.read_fixed_hex(32)
     b_x = reader.read_fixed_hex(32)

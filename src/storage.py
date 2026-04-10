@@ -1,7 +1,7 @@
-"""Output sink for captured transaction records.
+"""Output sink for captured transaction and block records.
 
 Provides :class:`JsonLineWriter`, which writes one JSON object per line to
-either stdout or a file.  A new file is created (with parent directories)
+either stdout or a file. A new file is created (with parent directories)
 if a path is supplied; the stream is flushed after every record so that
 partial output is not lost on unexpected exit.
 """
@@ -10,11 +10,11 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-from .models import CaptureRecord
+from .models import JsonLineRecord
 
 
 class JsonLineWriter:
-    """Writes :class:`~src.models.CaptureRecord` objects as JSON lines.
+    """Writes JSON-line record objects.
 
     Each call to :meth:`write` appends one JSON object (no whitespace) plus a
     newline to the underlying stream and flushes immediately.  When
@@ -48,7 +48,7 @@ class JsonLineWriter:
         self.close()
         return False
 
-    def write(self, record: CaptureRecord):
+    def write(self, record: JsonLineRecord):
         """Serialise *record* as a JSON line and flush the stream.
 
         Args:

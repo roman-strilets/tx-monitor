@@ -1,7 +1,7 @@
-"""Protocol-level data models for deserialised Beam transaction structures.
+"""Protocol-level data models for deserialised Beam transaction and block structures.
 
 All models are immutable frozen dataclasses and together represent the full
-parse tree produced by :mod:`src.deserializer`.
+parse tree produced by the deserializers package.
 """
 from __future__ import annotations
 
@@ -208,6 +208,57 @@ class TxOutput:
 
 
 @dataclass(frozen=True)
+class RecoveryConfidentialRangeProof:
+    """Recovery-only confidential range proof.
+
+    Beam's ``Recovery1`` block-body format omits the inner-product proof,
+    ``tau_x``, and ``t_dot`` fields. The remaining points and ``mu`` are still
+    enough to represent what the node transmitted.
+    """
+
+    kind: str
+    a: EcPoint
+    s: EcPoint
+    t1: EcPoint
+    t2: EcPoint
+    mu: str
+
+
+@dataclass(frozen=True)
+class RecoveryPublicRangeProof:
+    """Recovery-only public range proof.
+
+    Recovery-mode block bodies omit the public proof's signature while keeping
+    the recovered value and key-derivation metadata.
+    """
+
+    kind: str
+    value: int
+    recovery: Recovery
+
+
+@dataclass(frozen=True)
+class RecoveryAssetProof:
+    """Recovery-only asset proof payload."""
+
+    generator: EcPoint
+
+
+@dataclass(frozen=True)
+class BlockOutput:
+    """Single decoded block output."""
+
+    commitment: EcPoint
+    coinbase: bool
+    recovery_only: bool
+    confidential_proof: ConfidentialRangeProof | RecoveryConfidentialRangeProof | None = None
+    public_proof: PublicRangeProof | RecoveryPublicRangeProof | None = None
+    incubation: int | None = None
+    asset_proof: AssetProof | RecoveryAssetProof | None = None
+    extra_flags: int | None = None
+
+
+@dataclass(frozen=True)
 class TxCounts:
     """Transaction component counts."""
 
@@ -387,6 +438,24 @@ Kernel = (
 )
 
 
+@dataclass(frozen=True)
+class BlockHeader:
+    """Decoded Beam block header metadata."""
+
+    height: int
+    hash: str
+    previous_hash: str
+    chainwork: str
+    kernels: str
+    definition: str
+    timestamp: int
+    packed_difficulty: int
+    difficulty: float
+    rules_hash: str | None
+    pow_indices_hex: str
+    pow_nonce_hex: str
+
+
 # ---------------------------------------------------------------------------
 # Top-level structures
 # ---------------------------------------------------------------------------
@@ -411,3 +480,15 @@ class NewTransactionPayload:
     transaction: Transaction | None
     context: str | None
     fluff: bool
+
+
+@dataclass(frozen=True)
+class DecodedBlock:
+    """Parsed Beam block returned by the block-fetch feature."""
+
+    header: BlockHeader
+    inputs: list[TxInput]
+    outputs: list[BlockOutput]
+    kernels: list[Kernel]
+    counts: TxCounts
+    offset: str | None = None

@@ -105,14 +105,28 @@ class BufferReader:
         return chunk
 
     def read_u8(self) -> int:
-        """Read a single unsigned byte and return its integer value."""
+        """Read a single unsigned byte and return its integer value.
+
+        Returns:
+            The integer value in the range 0..255 represented by the
+            single byte read from the buffer.
+
+        Raises:
+            DeserializationError: If there are no bytes left to read.
+        """
         return self.read_bytes(1)[0]
 
     def read_bool(self) -> bool:
         """Read a single byte and interpret it as a boolean.
 
+        The value is considered false only when the underlying byte is
+        zero; any non-zero byte is interpreted as True.
+
         Returns:
-            False if the byte is 0, True otherwise.
+            `False` if the byte read is 0, otherwise `True`.
+
+        Raises:
+            DeserializationError: If there are no bytes left to read.
         """
         return self.read_u8() != 0
 
@@ -142,12 +156,26 @@ class BufferReader:
     def read_var_int(self) -> int:
         """Read a variable-length signed integer.
 
-        The integer is encoded with a one-byte header where the top bits
-        indicate sign and whether the value fits in a single byte.
-        Advances the cursor by the consumed bytes.
+        Encoding details:
+        - The first (header) byte encodes sign and length information:
+          - bit 7 (0x80): sign flag (1 = negative, 0 = positive)
+          - bit 6 (0x40): one-byte flag (1 = value stored directly in low 6 bits)
+          - bits 5..0 (0x3F): when one-byte flag is set, this is the
+            absolute value (0..63). When the one-byte flag is clear,
+            this field indicates the number of subsequent bytes that
+            encode the absolute value in little-endian order.
+        - If the one-byte flag is clear and the low-6 value is zero,
+          the absolute value is 0 (no extra bytes are read).
+
+        The method advances the internal cursor by the header and any
+        value bytes that are read.
 
         Returns:
-            The decoded signed integer.
+            The decoded signed integer (negative if the sign bit is set).
+
+        Raises:
+            DeserializationError: If the buffer ends unexpectedly while
+                reading the header or the indicated value bytes.
         """
         head = self.read_u8()
         negative = (head >> 7) & 1
@@ -172,44 +200,92 @@ class BufferReader:
         return int.from_bytes(self.read_bytes(size), "big")
 
     def read_fixed_hex(self, size: int) -> str:
-        """Read `size` bytes and return their hexadecimal representation."""
+        """Read `size` bytes and return their hexadecimal representation.
+
+        Args:
+            size: Number of bytes to read from the buffer.
+
+        Returns:
+            A lowercase hexadecimal string representing the `size` bytes
+            just read. The length of the returned string is `2 * size`.
+
+        Raises:
+            DeserializationError: If the buffer does not contain `size`
+                bytes.
+        """
         return self.read_bytes(size).hex()
 
     def read_scalar(self) -> str:
-        """Read a 32-byte scalar and return its hex string."""
+        """Read a 32-byte scalar and return it as a hex string.
+
+        Returns:
+            A 64-character lowercase hexadecimal string corresponding to
+            the 32 bytes read from the buffer.
+
+        Raises:
+            DeserializationError: If the buffer does not contain 32 bytes.
+        """
         return self.read_fixed_hex(32)
 
     def read_hash32(self) -> str:
-        """Read a 32-byte hash and return its hex string."""
+        """Read a 32-byte hash and return it as a hex string.
+
+        Returns:
+            A 64-character lowercase hexadecimal string corresponding to
+            the 32-byte hash read from the buffer.
+
+        Raises:
+            DeserializationError: If the buffer does not contain 32 bytes.
+        """
         return self.read_fixed_hex(32)
 
     def read_point(self) -> EcPoint:
-        """Read an elliptic-curve point stored as 32-byte x and a y flag.
+        """Read an elliptic-curve point encoded as an X coordinate and a Y flag.
+
+        Format:
+        - 32 bytes: X coordinate (big-endian raw bytes, returned as a
+          64-character lowercase hex string).
+        - 1 byte: boolean Y-parity flag (0 = False, non-zero = True).
 
         Returns:
-            An `EcPoint` with `x` as a hex string and `y` as a boolean.
+            An `EcPoint` instance with `x` set to the hex string of the
+            coordinate and `y` set to the boolean parity flag.
+
+        Raises:
+            DeserializationError: If the buffer does not contain the 33
+                bytes required for the point encoding.
         """
         return EcPoint(x=self.read_fixed_hex(32), y=self.read_bool())
 
     def read_point_x(self, y_flag: bool) -> EcPoint:
-        """Read a point x-coordinate (32 bytes) and set the given y flag.
+        """Read a point X coordinate (32 bytes) and attach a provided Y flag.
 
         Args:
-            y_flag: Boolean indicating the y parity/flag for the point.
+            y_flag: Boolean indicating the Y parity/flag to associate with
+                the X coordinate that is read.
 
         Returns:
-            An `EcPoint` with the read x and provided y flag.
+            An `EcPoint` with `x` set to the 64-character lowercase hex
+            string read from the buffer and `y` set to `y_flag`.
+
+        Raises:
+            DeserializationError: If the buffer does not contain 32 bytes
+                for the X coordinate.
         """
         return EcPoint(x=self.read_fixed_hex(32), y=y_flag)
 
     def read_byte_buffer(self) -> bytes:
         """Read a length-prefixed byte buffer.
 
-        First reads a compact unsigned integer length, then reads and
-        returns that many bytes.
+        The buffer is encoded as a compact (variable-length) unsigned
+        integer length followed by that many raw bytes.
 
         Returns:
-            The byte buffer of the decoded length.
+            The raw bytes corresponding to the decoded length.
+
+        Raises:
+            DeserializationError: If the length prefix or the following
+                bytes cannot be fully read from the buffer.
         """
         size = self.read_var_uint()
         return self.read_bytes(size)

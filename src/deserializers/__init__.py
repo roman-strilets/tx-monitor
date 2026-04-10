@@ -24,11 +24,20 @@ from src.deserializers.deserializer_core import (
 from src.deserializers.deserializer_proofs import (
 	deserialize_confidential_range_proof,
 	deserialize_public_range_proof,
+	deserialize_recovery_asset_proof,
+	deserialize_recovery_confidential_range_proof,
+	deserialize_recovery_public_range_proof,
 	deserialize_asset_proof,
 	deserialize_lelantus_proof,
 	deserialize_sigma_proof,
 )
 from src.deserializers.deserializer_kernels import deserialize_kernel
+from src.deserializers.deserializer_block import (
+	deserialize_body_pack_payload,
+	deserialize_body_payload,
+	deserialize_header_pack,
+	deserialize_new_tip_payload,
+)
 from src.deserializers.deserializer_tx import (
 	deserialize_new_transaction_payload,
 	deserialize_transaction,
@@ -46,10 +55,17 @@ __all__ = [
 	"decode_utf8",
 	"deserialize_confidential_range_proof",
 	"deserialize_public_range_proof",
+	"deserialize_recovery_asset_proof",
+	"deserialize_recovery_confidential_range_proof",
+	"deserialize_recovery_public_range_proof",
 	"deserialize_asset_proof",
 	"deserialize_lelantus_proof",
 	"deserialize_sigma_proof",
 	"deserialize_kernel",
+	"deserialize_body_pack_payload",
+	"deserialize_body_payload",
+	"deserialize_header_pack",
+	"deserialize_new_tip_payload",
 	"deserialize_new_transaction_payload",
 	"deserialize_transaction",
 	"deserialize_input",
