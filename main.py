@@ -1,13 +1,17 @@
-"""Command-line entry point for the Beam mem-pool transaction monitor.
+"""Command-line entry point for the Beam mem-pool monitor and block fetcher.
 
 Parses command-line arguments, validates them, and delegates to
-:func:`src.monitor.run_transaction_monitor`.  Run with ``--help`` for full
+:func:`src.monitor.run_transaction_monitor`, :func:`src.snapshot.run_snapshot`,
+or :func:`src.block_fetch.run_block_fetch`. Run with ``--help`` for full
 usage information.
 """
 import argparse
 import sys
 
-from src.monitor import MonitorConfig, run_transaction_monitor
+from src.block_fetch import BlockFetchConfig, run_block_fetch
+from src.monitor import LiveConfig, run_transaction_monitor
+from src.models import BlockFetchResult
+from src.snapshot import SnapshotConfig, run_snapshot
 from src.protocol import (
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_IDLE_TIMEOUT,
@@ -30,9 +34,18 @@ def main(argv: list[str] | None = None) -> int:
         Exit code: ``0`` on success, ``1`` on any error.
     """
     parser = argparse.ArgumentParser(
-        description="Capture or live-monitor Beam mem-pool transactions from a node"
+        description=(
+            "Capture Beam mem-pool transactions or fetch a block by height "
+            "from a node"
+        )
     )
     parser.add_argument("node", help="Beam node address as host or host:port")
+    parser.add_argument(
+        "--block-height",
+        type=int,
+        metavar="HEIGHT",
+        help="fetch and decode the block at this height instead of monitoring the mem-pool",
+    )
     parser.add_argument(
         "--connect-timeout",
         type=float,
@@ -105,26 +118,56 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{label} must be > 0")
     if args.reconnect_delay < 0:
         parser.error("reconnect-delay must be >= 0")
+    if args.block_height is not None and args.block_height <= 0:
+        parser.error("block-height must be > 0")
+    if args.block_height is not None and args.live:
+        parser.error("block-height cannot be combined with live mode")
 
     try:
         endpoint = parse_endpoint(args.node, DEFAULT_PORT)
         fork_hashes = parse_fork_hashes(args.fork_hash)
 
-        config = MonitorConfig(
-            endpoint=endpoint,
-            connect_timeout=args.connect_timeout,
-            request_timeout=args.request_timeout,
-            idle_timeout=args.idle_timeout,
-            reconnect_delay=args.reconnect_delay,
-            fork_hashes=fork_hashes,
-            live=args.live,
-            verbose=args.verbose,
-        )
-
         with JsonLineWriter(args.output) as writer:
-            result = run_transaction_monitor(config, writer)
+            if args.block_height is not None:
+                config = BlockFetchConfig(
+                    endpoint=endpoint,
+                    height=args.block_height,
+                    connect_timeout=args.connect_timeout,
+                    request_timeout=args.request_timeout,
+                    fork_hashes=fork_hashes,
+                    verbose=args.verbose,
+                )
+                result = run_block_fetch(config, writer)
+            elif args.live:
+                config = LiveConfig(
+                    endpoint=endpoint,
+                    connect_timeout=args.connect_timeout,
+                    request_timeout=args.request_timeout,
+                    reconnect_delay=args.reconnect_delay,
+                    fork_hashes=fork_hashes,
+                    verbose=args.verbose,
+                )
+                result = run_transaction_monitor(config, writer)
+            else:
+                config = SnapshotConfig(
+                    endpoint=endpoint,
+                    connect_timeout=args.connect_timeout,
+                    request_timeout=args.request_timeout,
+                    idle_timeout=args.idle_timeout,
+                    fork_hashes=fork_hashes,
+                    verbose=args.verbose,
+                )
+                result = run_snapshot(config, writer)
 
-        if result.live:
+        if isinstance(result, BlockFetchResult):
+            print(
+                f"captured block {result.resolved_height} ({result.resolved_hash}) "
+                f"from {result.node}; inputs={result.inputs}, "
+                f"outputs={result.outputs}, kernels={result.kernels}, "
+                f"elapsed={result.duration_seconds:.2f}s",
+                file=sys.stderr,
+            )
+        elif result.live:
             status = "stopped" if result.stopped else "ended"
             print(
                 f"{status} live monitor for {result.node}; "
