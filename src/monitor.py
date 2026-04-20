@@ -12,21 +12,24 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from src.codec import decode_transaction_id, encode_transaction_id
-from src.connection import BeamConnection
-from src.deserializers import deserialize_new_transaction_payload
-from src.models import CaptureRecord, MonitorResult, SnapshotState
-from src.protocol import (
+from beam_p2p import (
+    Address,
+    BeamConnection,
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_RECONNECT_DELAY,
     DEFAULT_REQUEST_TIMEOUT,
     LOGIN_FLAG_SPREADING_TRANSACTIONS,
     MessageType,
+    decode_transaction_id,
+    encode_transaction_id,
+    format_address,
     message_name,
-    Address,
+    utc_now_iso,
 )
+from beam_p2p.deserializers import deserialize_new_transaction_payload
+
+from src.models import CaptureRecord, MonitorResult, SnapshotState
 from src.storage import JsonLineWriter
-from src.utils import format_address, utc_now_iso
 
 
 @dataclass(frozen=True)

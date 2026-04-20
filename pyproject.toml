@@ -5,10 +5,14 @@ description = "Beam mem-pool transaction snapshot monitor"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+	"beam-p2p",
 	"ecdsa>=0.19",
 	"cryptography>=41.0",
 	"pytest-cov>=7.1.0",
 ]
+
+[tool.uv.sources]
+beam-p2p = { git = "https://github.com/roman-strilets/beam-p2p.git" }
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

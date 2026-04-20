@@ -1,16 +1,16 @@
 import pytest
 
-from main import main
-from src.codec import encode_get_body_pack_payload, encode_height_range, encode_uint
-from src.connection import build_login_payload, parse_login_payload
-from src.deserializers import (
+from beam_p2p import EXTENSION_VERSION, encode_get_body_pack_payload, encode_height_range, encode_uint
+from beam_p2p import extension_bits
+from beam_p2p.connection import build_login_payload, parse_login_payload
+from beam_p2p.deserializers import (
     deserialize_body_pack_payload,
     deserialize_body_payload,
     deserialize_header_pack,
     deserialize_new_tip_payload,
 )
-from src.protocol import EXTENSION_VERSION
-from src.utils import extension_bits
+
+from main import main
 
 
 def _u32(value: int) -> bytes:

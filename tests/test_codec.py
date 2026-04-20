@@ -1,6 +1,6 @@
 import pytest
 
-from src.codec import (
+from beam_p2p import (
     decode_transaction_id,
     decode_uint,
     encode_transaction_id,
@@ -8,7 +8,7 @@ from src.codec import (
     make_header,
     parse_header,
 )
-from src.protocol import MessageType
+from beam_p2p import MessageType
 
 
 @pytest.mark.parametrize("value", [0, 1, 127, 128, 255, 256, 65_535, 1_000_000])

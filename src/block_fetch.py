@@ -6,24 +6,26 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from src.codec import encode_get_body_pack_payload, encode_height_range
-from src.connection import BeamConnection
-from src.deserializers import (
+from beam_p2p import (
+    Address,
+    BeamConnection,
+    DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_REQUEST_TIMEOUT,
+    MessageType,
+    encode_get_body_pack_payload,
+    encode_height_range,
+    format_address,
+    message_name,
+    utc_now_iso,
+)
+from beam_p2p.deserializers import (
     deserialize_body_pack_payload,
     deserialize_body_payload,
     deserialize_header_pack,
     deserialize_new_tip_payload,
 )
 from src.models import BlockCaptureRecord, BlockFetchResult
-from src.protocol import (
-    Address,
-    DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_REQUEST_TIMEOUT,
-    MessageType,
-    message_name,
-)
 from src.storage import JsonLineWriter
-from src.utils import format_address, utc_now_iso
 
 
 BODY_FLAG_FULL = 0

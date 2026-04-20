@@ -1,12 +1,11 @@
 import pytest
 from unittest.mock import MagicMock
 
-from src.codec import decode_uint
-from src.connection import build_login_payload
+from beam_p2p import EXTENSION_VERSION, LOGIN_FLAG_SPREADING_TRANSACTIONS, decode_uint, extension_bits
+from beam_p2p.connection import build_login_payload
+
 from src.models import SnapshotState
 from src.monitor import LiveConfig, TransactionMonitor
-from src.protocol import EXTENSION_VERSION, LOGIN_FLAG_SPREADING_TRANSACTIONS
-from src.utils import extension_bits
 
 
 def test_build_login_payload_sets_flags_and_fork_hashes():

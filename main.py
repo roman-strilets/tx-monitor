@@ -8,19 +8,21 @@ usage information.
 import argparse
 import sys
 
-from src.block_fetch import BlockFetchConfig, run_block_fetch
-from src.monitor import LiveConfig, run_transaction_monitor
-from src.models import BlockFetchResult
-from src.snapshot import SnapshotConfig, run_snapshot
-from src.protocol import (
+from beam_p2p import (
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_PORT,
     DEFAULT_RECONNECT_DELAY,
     DEFAULT_REQUEST_TIMEOUT,
+    parse_endpoint,
+    parse_fork_hashes,
 )
+
+from src.block_fetch import BlockFetchConfig, run_block_fetch
+from src.monitor import LiveConfig, run_transaction_monitor
+from src.models import BlockFetchResult
+from src.snapshot import SnapshotConfig, run_snapshot
 from src.storage import JsonLineWriter
-from src.utils import parse_endpoint, parse_fork_hashes
 
 
 def main(argv: list[str] | None = None) -> int:

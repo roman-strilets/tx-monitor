@@ -8,7 +8,7 @@ in-flight transaction requests during a capture session.
 from collections import deque
 from dataclasses import asdict, dataclass, field
 
-from src.protocol_models import DecodedBlock, NewTransactionPayload
+from beam_p2p.protocol_models import DecodedBlock, NewTransactionPayload
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,7 @@ import json
 import pytest
 from pathlib import Path
 
-from src.deserializers import (
+from beam_p2p.deserializers import (
     BufferReader,
     DeserializationError,
     KernelSubtype,
@@ -12,7 +12,7 @@ from src.deserializers import (
     deserialize_kernel,
     deserialize_new_transaction_payload,
 )
-from src.protocol_models import TxCounts
+from beam_p2p.protocol_models import TxCounts
 
 
 def test_decode_msb_bits():
